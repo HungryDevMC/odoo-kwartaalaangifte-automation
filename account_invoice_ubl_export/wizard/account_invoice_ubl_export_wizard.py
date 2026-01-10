@@ -741,28 +741,23 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             _logger.info("No invoices for %s %s %s", company.name, quarter, year)
             return
 
-        # Generate ZIP with UBL files
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            for invoice in invoices:
-                try:
-                    xml_content = self._generate_ubl_xml(invoice)
-                    if xml_content:
-                        filename = "%s.xml" % invoice.name.replace("/", "-")
-                        zip_file.writestr(filename, xml_content)
-                except Exception as e:
-                    _logger.warning(
-                        "UBL export failed for %s: %s", invoice.name, str(e)
-                    )
+        # Generate individual UBL XML files
+        attachments = []
+        for invoice in invoices:
+            try:
+                xml_content = self._generate_ubl_xml(invoice)
+                if xml_content:
+                    filename = "%s.xml" % invoice.name.replace("/", "-")
+                    attachments.append((filename, xml_content, "application/xml"))
+            except Exception as e:
+                _logger.warning(
+                    "UBL export failed for %s: %s", invoice.name, str(e)
+                )
 
-        zip_buffer.seek(0)
-        zip_data = zip_buffer.getvalue()
-
-        if not zip_data:
+        if not attachments:
             return
 
-        # Create and send email
-        zip_filename = "UBL_%s_%s.zip" % (year, quarter)
+        # Create and send email with individual attachments
         subject = "%s - UBL Export %s %s" % (company.name, quarter, year)
         body = _(
             "<p>Quarterly UBL export for %(quarter)s %(year)s</p>"
@@ -775,11 +770,11 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             "company": company.name,
             "start": start_date,
             "end": end_date,
-            "count": len(invoices),
+            "count": len(attachments),
         }
 
-        self._send_export_email(email_to, subject, body, zip_data, zip_filename)
-        _logger.info("Sent UBL export to %s for %s", email_to, company.name)
+        self._send_email_with_attachments(email_to, subject, body, attachments)
+        _logger.info("Sent %d UBL files to %s for %s", len(attachments), email_to, company.name)
 
     def _send_statements_quarterly_email(
         self, company, quarter, year, start_date, end_date, email_to, journals
@@ -880,6 +875,38 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             "res_id": mail.id,
         })
         mail.attachment_ids = [(4, attachment.id)]
+
+        # Send email
+        mail.send(auto_commit=True)
+
+    def _send_email_with_attachments(self, email_to, subject, body, attachments):
+        """Send email with multiple individual attachments.
+
+        :param email_to: Recipient email address
+        :param subject: Email subject
+        :param body: HTML email body
+        :param attachments: List of tuples (filename, data, mimetype)
+        """
+        mail = self.env["mail.mail"].sudo().create({
+            "email_to": email_to,
+            "subject": subject,
+            "body_html": body,
+            "auto_delete": True,
+        })
+
+        # Add all attachments
+        attachment_ids = []
+        for filename, data, mimetype in attachments:
+            attachment = self.env["ir.attachment"].sudo().create({
+                "name": filename,
+                "datas": base64.b64encode(data) if isinstance(data, bytes) else base64.b64encode(data.encode()),
+                "mimetype": mimetype,
+                "res_model": "mail.mail",
+                "res_id": mail.id,
+            })
+            attachment_ids.append(attachment.id)
+
+        mail.attachment_ids = [(6, 0, attachment_ids)]
 
         # Send email
         mail.send(auto_commit=True)
