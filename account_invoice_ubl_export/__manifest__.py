@@ -31,6 +31,6 @@
     "application": False,
     "auto_install": False,
     "support": "info@gesp.be",
-    "price": 25,
+    "price": 22.99,
     "currency": "EUR",
 }
