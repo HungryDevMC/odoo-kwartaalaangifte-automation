@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_inherit_ubl_export" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.ubl.export</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="account.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//block[@id='invoicing_settings']" position="after">
+                <block title="Quarterly Export" id="quarterly_export_settings">
+                    <setting id="quarterly_export_setting" string="Enable Quarterly Auto-Send"
+                             help="Automatically send invoices and bank statements at the end of each quarter">
+                        <field name="quarterly_export_enabled"/>
+                        <div class="content-group" invisible="not quarterly_export_enabled">
+                            <div class="row mt16">
+                                <label for="quarterly_send_day" class="col-lg-4 o_light_label"/>
+                                <field name="quarterly_send_day" class="col-lg-2"/>
+                                <span class="text-muted ms-2">(1-28, day of month)</span>
+                            </div>
+                        </div>
+                    </setting>
+                    <setting id="quarterly_ubl_email_setting" string="BilltoBox Email"
+                             invisible="not quarterly_export_enabled"
+                             help="Send UBL XML files to BilltoBox or similar service">
+                        <div class="content-group">
+                            <div class="row">
+                                <label for="quarterly_ubl_email" class="col-lg-4 o_light_label"/>
+                                <field name="quarterly_ubl_email" class="col-lg-8"
+                                       placeholder="e.g., upload@billtobox.be"/>
+                            </div>
+                        </div>
+                    </setting>
+                    <setting id="quarterly_pdf_email_setting" string="Bank Statements Email"
+                             invisible="not quarterly_export_enabled"
+                             help="Send bank statement PDFs to your accountant">
+                        <div class="content-group">
+                            <div class="row">
+                                <label for="quarterly_pdf_email" class="col-lg-4 o_light_label"/>
+                                <field name="quarterly_pdf_email" class="col-lg-8"
+                                       placeholder="e.g., accountant@example.com"/>
+                            </div>
+                            <div class="row mt8">
+                                <label for="quarterly_journal_ids" class="col-lg-4 o_light_label"/>
+                                <field name="quarterly_journal_ids" class="col-lg-8"
+                                       widget="many2many_tags"
+                                       options="{'no_create': True}"/>
+                            </div>
+                        </div>
+                    </setting>
+                    <setting id="quarterly_filter_setting" string="Invoice Filter"
+                             invisible="not quarterly_export_enabled"
+                             help="Filter which invoices/bills to include in quarterly exports">
+                        <div class="content-group">
+                            <div class="row">
+                                <label for="quarterly_state_filter" class="col-lg-4 o_light_label"/>
+                                <field name="quarterly_state_filter" class="col-lg-8"/>
+                            </div>
+                            <div class="row mt8">
+                                <label for="quarterly_custom_domain" class="col-lg-4 o_light_label"/>
+                                <field name="quarterly_custom_domain" class="col-lg-8"
+                                       placeholder="[('partner_id.country_id.code', '=', 'BE')]"/>
+                            </div>
+                        </div>
+                    </setting>
+                    <setting id="quarterly_test_setting" string="Manual Send"
+                             invisible="not quarterly_export_enabled"
+                             help="Send last quarter now (will still send on scheduled cron date)">
+                        <button name="action_test_quarterly_export"
+                                type="object"
+                                string="Send Last Quarter Now"
+                                class="btn-secondary"
+                                icon="fa-paper-plane"/>
+                    </setting>
+                </block>
+            </xpath>
+        </field>
+    </record>
+</odoo>

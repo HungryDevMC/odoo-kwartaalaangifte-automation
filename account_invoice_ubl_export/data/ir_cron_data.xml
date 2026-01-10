@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <!-- Cron job for quarterly export - runs daily, checks if it should send -->
+    <record id="ir_cron_quarterly_export" model="ir.cron">
+        <field name="name">Quarterly UBL/Statement Export</field>
+        <field name="model_id" ref="account_invoice_ubl_export.model_account_invoice_ubl_export_wizard"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_quarterly_export()</field>
+        <field name="user_id" ref="base.user_root"/>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="True"/>
+    </record>
+</odoo>

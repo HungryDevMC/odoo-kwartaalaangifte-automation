@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:15
+    container_name: odoo18-db
+    environment:
+      - POSTGRES_USER=odoo
+      - POSTGRES_PASSWORD=odoo
+      - POSTGRES_DB=postgres
+    volumes:
+      - odoo-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit
+    container_name: odoo18-mailpit
+    ports:
+      - "8025:8025"  # Web UI
+      - "1025:1025"  # SMTP
+    restart: unless-stopped
+
+  odoo:
+    image: odoo:18
+    container_name: odoo18
+    depends_on:
+      - db
+    ports:
+      - "8069:8069"
+    environment:
+      - HOST=db
+      - USER=odoo
+      - PASSWORD=odoo
+    volumes:
+      # Custom module
+      - ./account_invoice_ubl_export:/mnt/extra-addons/account_invoice_ubl_export
+      # Enterprise addons
+      - ./enterprise:/mnt/enterprise-addons
+      # Odoo data (filestore, sessions, etc.)
+      - odoo-web-data:/var/lib/odoo
+    command: ["odoo", "--addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons,/mnt/enterprise-addons"]
+    restart: unless-stopped
+
+volumes:
+  odoo-db-data:
+  odoo-web-data:

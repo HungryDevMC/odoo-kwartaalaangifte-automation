@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="account_invoice_ubl_export_wizard_form" model="ir.ui.view">
+        <field name="name">account.invoice.ubl.export.wizard.form</field>
+        <field name="model">account.invoice.ubl.export.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Export to UBL">
+                <!-- Draft State: Selection Form -->
+                <div invisible="state != 'draft'">
+                    <group>
+                        <group string="Selection Method">
+                            <field name="selection_mode" widget="radio"/>
+                        </group>
+                        <group string="Filter">
+                            <field name="direction" widget="radio"/>
+                            <field name="document_type"/>
+                        </group>
+                    </group>
+
+                    <group string="Document Filter"
+                           invisible="selection_mode == 'manual'">
+                        <group>
+                            <field name="state_filter"/>
+                            <field name="custom_domain"
+                                   placeholder="[('partner_id.name', 'ilike', 'test')]"/>
+                        </group>
+                        <group/>
+                    </group>
+
+                    <!-- Quarter Selection -->
+                    <group invisible="selection_mode != 'quarter'" string="Period">
+                        <group>
+                            <field name="year"/>
+                            <field name="quarter"/>
+                        </group>
+                        <group/>
+                    </group>
+
+                    <!-- Date Range Selection -->
+                    <group invisible="selection_mode != 'date_range'" string="Date Range">
+                        <group>
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                        <group/>
+                    </group>
+
+                    <!-- Manual Selection -->
+                    <group invisible="selection_mode != 'manual'" string="Select Documents">
+                        <field name="invoice_ids" nolabel="1" colspan="2">
+                            <list>
+                                <field name="name" string="Number"/>
+                                <field name="partner_id"/>
+                                <field name="invoice_date"/>
+                                <field name="move_type"/>
+                                <field name="amount_total_signed" string="Total"/>
+                            </list>
+                        </field>
+                    </group>
+
+                    <!-- Bank Statements -->
+                    <group string="Bank Statements">
+                        <group>
+                            <field name="include_bank_statements"/>
+                        </group>
+                        <group invisible="not include_bank_statements">
+                            <field name="journal_ids" widget="many2many_tags"
+                                   options="{'no_create': True}"/>
+                        </group>
+                    </group>
+
+                    <!-- Statistics -->
+                    <group string="Summary" invisible="invoice_count == 0 and statement_count == 0">
+                        <group>
+                            <field name="invoice_count"/>
+                            <field name="total_amount"/>
+                            <field name="currency_id" invisible="1"/>
+                        </group>
+                        <group invisible="not include_bank_statements">
+                            <field name="statement_count"/>
+                        </group>
+                    </group>
+
+                    <div class="text-muted" invisible="invoice_count != 0 or statement_count != 0">
+                        <p><strong>No documents found</strong> for the selected criteria.</p>
+                    </div>
+
+                    <footer>
+                        <button name="action_export"
+                                string="Export"
+                                type="object"
+                                class="btn-primary"
+                                invisible="invoice_count == 0 and statement_count == 0"/>
+                        <button name="action_preview"
+                                string="Preview Invoices"
+                                type="object"
+                                class="btn-secondary"
+                                invisible="invoice_count == 0"/>
+                        <button string="Cancel" class="btn-secondary" special="cancel"/>
+                    </footer>
+                </div>
+
+                <!-- Done State: Download Form -->
+                <div invisible="state != 'done'">
+                    <div class="text-center mb-4">
+                        <h3 class="text-success">
+                            <i class="fa fa-check-circle"/> Export Complete
+                        </h3>
+                        <p class="text-muted">Your export is ready for download.</p>
+                    </div>
+
+                    <group>
+                        <group>
+                            <field name="export_filename" readonly="1"/>
+                            <field name="export_file" filename="export_filename" readonly="1"/>
+                        </group>
+                        <group/>
+                    </group>
+
+                    <footer>
+                        <button name="action_download"
+                                string="Download ZIP"
+                                type="object"
+                                class="btn-primary"/>
+                        <button name="action_reset"
+                                string="New Export"
+                                type="object"
+                                class="btn-secondary"/>
+                        <button string="Close" class="btn-secondary" special="cancel"/>
+                    </footer>
+                </div>
+
+                <field name="state" invisible="1"/>
+            </form>
+        </field>
+    </record>
+
+    <!-- Wizard Action -->
+    <record id="action_account_invoice_ubl_export_wizard" model="ir.actions.act_window">
+        <field name="name">Export to UBL</field>
+        <field name="res_model">account.invoice.ubl.export.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+</odoo>

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Menu item under Accounting > Reporting -->
+    <menuitem
+        id="menu_account_invoice_ubl_export"
+        name="Export to UBL"
+        parent="account.menu_finance_reports"
+        action="action_account_invoice_ubl_export_wizard"
+        sequence="100"
+        groups="account.group_account_invoice"/>
+
+    <!-- Server action for list view context menu -->
+    <record id="action_account_move_ubl_export" model="ir.actions.server">
+        <field name="name">Export to UBL</field>
+        <field name="model_id" ref="account.model_account_move"/>
+        <field name="binding_model_id" ref="account.model_account_move"/>
+        <field name="binding_view_types">list</field>
+        <field name="state">code</field>
+        <field name="code">
+if records:
+    # Filter to only posted invoices (customer and vendor)
+    valid_types = ['out_invoice', 'out_refund', 'in_invoice', 'in_refund']
+    valid_records = records.filtered(
+        lambda r: r.move_type in valid_types and r.state == 'posted'
+    )
+    if valid_records:
+        action = env.ref('account_invoice_ubl_export.action_account_invoice_ubl_export_wizard').sudo().read()[0]
+        action['context'] = {
+            'default_selection_mode': 'manual',
+            'default_invoice_ids': [(6, 0, valid_records.ids)],
+        }
+        action = action
+        </field>
+    </record>
+</odoo>

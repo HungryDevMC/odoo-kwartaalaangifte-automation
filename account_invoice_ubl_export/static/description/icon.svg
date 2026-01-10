@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" rx="10" fill="#714B67"/>
+  <g fill="white">
+    <!-- Document icon -->
+    <path d="M25 15h35l15 15v55a5 5 0 01-5 5H25a5 5 0 01-5-5V20a5 5 0 015-5z"/>
+    <path d="M60 15v15h15" fill="none" stroke="white" stroke-width="2"/>
+    <!-- UBL text -->
+    <text x="50" y="55" text-anchor="middle" font-family="Arial" font-size="16" font-weight="bold" fill="#714B67">UBL</text>
+    <!-- Export arrow -->
+    <path d="M50 65v15M42 72l8 8 8-8" fill="none" stroke="#714B67" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
