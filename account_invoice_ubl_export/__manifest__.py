@@ -2,7 +2,7 @@
 # Copyright 2025 HungryDev
 # License LGPL-3.0 or later (https://www.gnu.org/licenses/lgpl).
 {
-    "name": "Invoice UBL & Bank Statement Export",
+    "name": "UBL & Statement Export",
     "version": "18.0.1.1.0",
     "category": "Accounting/Accounting",
     "summary": "Bulk export invoices to UBL XML and bank statements to PDF with quarterly auto-send",
