@@ -27,7 +27,7 @@
     "installable": True,
     "application": False,
     "auto_install": False,
-    "support": "support@hungrydev.be",
-    "price": 0,
+    "support": "info@gesp.be",
+    "price": 25,
     "currency": "EUR",
 }
