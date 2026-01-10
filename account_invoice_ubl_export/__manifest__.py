@@ -22,7 +22,10 @@
         "views/menu_views.xml",
     ],
     "images": [
-        "static/description/icon.svg",
+        "static/description/screenshot1.png",
+        "static/description/screenshot2.png",
+        "static/description/screenshot3.png",
+        "static/description/screenshot4.png",
     ],
     "installable": True,
     "application": False,
