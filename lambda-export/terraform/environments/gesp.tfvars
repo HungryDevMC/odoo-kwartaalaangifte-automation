@@ -13,10 +13,10 @@ aws_region  = "eu-west-1"
 # - TF_VAR_odoo_api_key
 
 # === Filter Settings ===
-direction     = "both"      # both, outgoing, incoming
-document_type = "all"       # all, invoice, refund
-state_filter  = "posted"    # posted, posted_draft_bills, posted_draft_invoices, posted_draft, all
-custom_domain = ""          # Optional: [["partner_id.country_id.code", "=", "BE"]]
+direction     = "both"   # both, outgoing, incoming
+document_type = "all"    # all, invoice, refund
+state_filter  = "posted" # posted, posted_draft_bills, posted_draft_invoices, posted_draft, all
+custom_domain = ""       # Optional: [["partner_id.country_id.code", "=", "BE"]]
 
 # === Email Settings ===
 # Set via environment variables for security:
@@ -26,6 +26,6 @@ custom_domain = ""          # Optional: [["partner_id.country_id.code", "=", "BE
 
 # === Quarterly Settings ===
 send_day                  = 5
-bank_journal_ids          = ""  # Comma-separated IDs
+bank_journal_ids          = "" # Comma-separated IDs
 enable_quarterly_schedule = true
 

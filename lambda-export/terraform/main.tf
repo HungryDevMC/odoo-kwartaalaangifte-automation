@@ -42,7 +42,7 @@ provider "aws" {
 # ============================================================
 
 locals {
-  function_name = "odoo-ubl-export-${var.environment}"
+  function_name     = "odoo-ubl-export-${var.environment}"
   lambda_source_dir = "${path.module}/.."
 }
 
@@ -53,7 +53,7 @@ locals {
 resource "aws_s3_bucket" "exports" {
   bucket = "${local.function_name}-exports"
 
-  force_destroy = true  # Allow deletion even if not empty
+  force_destroy = true # Allow deletion even if not empty
 
   tags = {
     Name = "${local.function_name}-exports"
@@ -210,13 +210,13 @@ resource "aws_lambda_function" "export" {
       ODOO_USERNAME = var.odoo_username
       ODOO_API_KEY  = var.odoo_api_key
       # Filters
-      DIRECTION        = var.direction
-      DOCUMENT_TYPE    = var.document_type
-      STATE_FILTER     = var.state_filter
-      CUSTOM_DOMAIN    = var.custom_domain
+      DIRECTION     = var.direction
+      DOCUMENT_TYPE = var.document_type
+      STATE_FILTER  = var.state_filter
+      CUSTOM_DOMAIN = var.custom_domain
       # Email (sent via Odoo's mail system)
-      UBL_EMAIL    = var.ubl_email
-      PDF_EMAIL    = var.pdf_email
+      UBL_EMAIL = var.ubl_email
+      PDF_EMAIL = var.pdf_email
       # Quarterly
       SEND_DAY         = tostring(var.send_day)
       BANK_JOURNAL_IDS = var.bank_journal_ids
