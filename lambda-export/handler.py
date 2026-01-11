@@ -495,29 +495,72 @@ def _fetch_related_data(
     return lines_by_invoice, partners, taxes, products
 
 
-def _generate_bank_transactions_csv(statement_lines: list[dict]) -> bytes:
-    """Generate a CSV export of bank transaction lines.
+def _generate_bank_transactions_pdf(statement_lines: list[dict], date_from: date, date_to: date) -> bytes:
+    """Generate a PDF report of bank transaction lines.
 
     Args:
         statement_lines: List of bank statement line dicts from Odoo
+        date_from: Start date of the period
+        date_to: End date of the period
 
     Returns:
-        CSV content as bytes
+        PDF content as bytes
     """
-    import csv
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     import io
 
-    output = io.StringIO()
-    writer = csv.writer(output)
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=15*mm,
+        leftMargin=15*mm,
+        topMargin=15*mm,
+        bottomMargin=15*mm,
+    )
 
-    # Header row
-    writer.writerow([
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        spaceAfter=10,
+    )
+    subtitle_style = ParagraphStyle(
+        'CustomSubtitle',
+        parent=styles['Normal'],
+        fontSize=10,
+        spaceAfter=20,
+        textColor=colors.gray,
+    )
+
+    elements = []
+
+    # Title
+    elements.append(Paragraph("Bank Transactions Report", title_style))
+    elements.append(Paragraph(
+        f"Period: {date_from.strftime('%d-%m-%Y')} to {date_to.strftime('%d-%m-%Y')} | "
+        f"Total transactions: {len(statement_lines)}",
+        subtitle_style
+    ))
+
+    # Calculate totals
+    total_credit = sum(line.get("amount", 0) for line in statement_lines if line.get("amount", 0) > 0)
+    total_debit = sum(line.get("amount", 0) for line in statement_lines if line.get("amount", 0) < 0)
+
+    # Table header
+    table_data = [[
         "Date",
         "Journal",
         "Reference",
         "Partner",
-        "Amount",
-    ])
+        "Debit",
+        "Credit",
+    ]]
 
     # Data rows
     for line in statement_lines:
@@ -533,15 +576,74 @@ def _generate_bank_transactions_csv(statement_lines: list[dict]) -> bytes:
             if isinstance(partner_data, (list, tuple)) and len(partner_data) > 1:
                 partner_name = partner_data[1]
 
-        writer.writerow([
+        amount = line.get("amount", 0)
+        debit = f"€ {abs(amount):,.2f}" if amount < 0 else ""
+        credit = f"€ {amount:,.2f}" if amount > 0 else ""
+
+        # Truncate long strings
+        ref = line.get("payment_ref") or line.get("name", "")
+        if len(ref) > 40:
+            ref = ref[:37] + "..."
+        if len(partner_name) > 30:
+            partner_name = partner_name[:27] + "..."
+
+        table_data.append([
             line.get("date", ""),
             journal_name,
-            line.get("payment_ref") or line.get("name", ""),
+            ref,
             partner_name,
-            line.get("amount", 0),
+            debit,
+            credit,
         ])
 
-    return output.getvalue().encode("utf-8")
+    # Add totals row
+    table_data.append([
+        "", "", "", "TOTALS:",
+        f"€ {abs(total_debit):,.2f}",
+        f"€ {total_credit:,.2f}",
+    ])
+
+    # Create table
+    col_widths = [22*mm, 35*mm, 80*mm, 60*mm, 30*mm, 30*mm]
+    table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    table.setStyle(TableStyle([
+        # Header style
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('TOPPADDING', (0, 0), (-1, 0), 8),
+
+        # Data rows style
+        ('FONTNAME', (0, 1), (-1, -2), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -2), 8),
+        ('BOTTOMPADDING', (0, 1), (-1, -2), 4),
+        ('TOPPADDING', (0, 1), (-1, -2), 4),
+
+        # Totals row style
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#ecf0f1')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, -1), (-1, -1), 9),
+        ('BOTTOMPADDING', (0, -1), (-1, -1), 8),
+        ('TOPPADDING', (0, -1), (-1, -1), 8),
+
+        # Alternating row colors
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#f8f9fa')]),
+
+        # Grid
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#dee2e6')),
+
+        # Alignment
+        ('ALIGN', (4, 0), (5, -1), 'RIGHT'),  # Amount columns right-aligned
+    ]))
+
+    elements.append(table)
+
+    # Build PDF
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def _export_bank_statements(
@@ -579,14 +681,14 @@ def _export_bank_statements(
         except Exception as e:
             logger.warning(f"Could not fetch statement lines: {e}")
 
-        # If no formal statements but we have transaction lines, generate CSV export
+        # If no formal statements but we have transaction lines, generate PDF report
         if not statements and statement_lines:
-            logger.info("No formal statements, generating CSV from transaction lines")
-            csv_content = _generate_bank_transactions_csv(statement_lines)
-            if csv_content:
-                statement_pdfs.append(("Bank_Transactions.csv", csv_content))
-                logger.info(f"Generated bank transactions CSV with {len(statement_lines)} transactions")
-            # Return the CSV - no formal statements to process
+            logger.info("No formal statements, generating PDF report from transaction lines")
+            pdf_content = _generate_bank_transactions_pdf(statement_lines, date_from, date_to)
+            if pdf_content:
+                statement_pdfs.append(("Bank_Transactions.pdf", pdf_content))
+                logger.info(f"Generated bank transactions PDF with {len(statement_lines)} transactions")
+            # Return the PDF - no formal statements to process
             return statement_pdfs
 
         if not statements:
@@ -759,7 +861,7 @@ def _send_bank_statements_email(
         # Convert to attachment format
         attachments = []
         for filename, data in statement_files:
-            mimetype = "text/csv" if filename.endswith(".csv") else "application/pdf"
+            mimetype = "application/pdf" if filename.endswith(".pdf") else "text/csv"
             attachments.append((filename, data, mimetype))
 
         if not attachments:

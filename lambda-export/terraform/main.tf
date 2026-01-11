@@ -151,38 +151,11 @@ resource "aws_iam_role_policy" "lambda" {
 # Package Lambda code
 # ============================================================
 
+# Lambda package - uses build directory created by CI pipeline (includes dependencies)
 data "archive_file" "lambda" {
   type        = "zip"
+  source_dir  = "${local.lambda_source_dir}/build"
   output_path = "${path.module}/lambda_function.zip"
-
-  source {
-    content  = file("${local.lambda_source_dir}/handler.py")
-    filename = "handler.py"
-  }
-  source {
-    content  = file("${local.lambda_source_dir}/config.py")
-    filename = "config.py"
-  }
-  source {
-    content  = file("${local.lambda_source_dir}/odoo_client.py")
-    filename = "odoo_client.py"
-  }
-  source {
-    content  = file("${local.lambda_source_dir}/ubl_generator.py")
-    filename = "ubl_generator.py"
-  }
-  source {
-    content  = file("${local.lambda_source_dir}/email_sender.py")
-    filename = "email_sender.py"
-  }
-  source {
-    content  = file("${local.lambda_source_dir}/download_handler.py")
-    filename = "download_handler.py"
-  }
-  source {
-    content  = file("${local.lambda_source_dir}/list_handler.py")
-    filename = "list_handler.py"
-  }
 }
 
 # ============================================================
