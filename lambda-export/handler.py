@@ -102,7 +102,8 @@ def lambda_handler(event: dict, context) -> dict:
         if send_email and config.ubl_email:
             _send_ubl_email(config, result, quarter, year, client)
 
-        return result
+        # Clean response - remove binary data that can't be serialized
+        return _clean_response(result)
 
     except Exception as e:
         logger.exception("Export failed")
@@ -156,7 +157,7 @@ def _handle_auto_quarterly_export(config: ExportConfig) -> dict:
     if config.ubl_email:
         _send_ubl_email(config, result, quarter, str(year), client)
 
-    return result
+    return _clean_response(result)
 
 
 def _run_export(
@@ -655,6 +656,38 @@ def _parse_date_range(event: dict) -> tuple[date | None, date | None, str | None
         )
 
     return None, None, None, None
+
+
+def _clean_response(result: dict) -> dict:
+    """Clean response by removing binary data that can't be serialized.
+
+    Args:
+        result: Response dict that may contain binary data
+
+    Returns:
+        Clean response dict safe for JSON serialization
+    """
+    # If it's already a proper API response with statusCode
+    if "statusCode" in result:
+        # Remove internal binary fields
+        clean_result = {
+            "statusCode": result["statusCode"],
+            "headers": result.get("headers", {"Content-Type": "application/json"}),
+        }
+        
+        # If body is already a JSON string, keep it
+        if "body" in result and isinstance(result["body"], str):
+            clean_result["body"] = result["body"]
+        else:
+            # Create body from result_data if available
+            result_data = result.get("_result_data", {})
+            clean_data = {k: v for k, v in result_data.items() if not k.startswith("_")}
+            clean_result["body"] = json.dumps(clean_data) if clean_data else result.get("body", "{}")
+        
+        return clean_result
+    
+    # Otherwise just return as-is (shouldn't happen)
+    return result
 
 
 def _success_response(data: dict) -> dict:
