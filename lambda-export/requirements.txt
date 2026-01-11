@@ -1,0 +1,9 @@
+# AWS Lambda UBL Export
+# No external dependencies needed - uses Python stdlib only!
+# xmlrpc.client - built into Python
+# xml.etree.ElementTree - built into Python
+# zipfile, io, base64 - built into Python
+
+# Optional: boto3 is included in Lambda runtime by default
+# boto3  # Only needed if you want to use S3
+

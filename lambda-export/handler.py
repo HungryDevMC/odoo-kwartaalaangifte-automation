@@ -1,0 +1,623 @@
+# -*- coding: utf-8 -*-
+"""AWS Lambda handler for Odoo UBL export.
+
+Supports all configuration options from the Odoo module:
+- Direction filter (customer invoices / vendor bills / both)
+- Document type filter (invoices / credit notes / all)
+- State filter (posted / drafts / all combinations)
+- Custom domain filter
+- Email sending to BilltoBox and accountant
+- Quarterly auto-send scheduling
+"""
+
+import base64
+import io
+import json
+import logging
+import os
+import zipfile
+from datetime import date
+
+from config import ExportConfig
+from email_sender import OdooEmailSender
+from odoo_client import OdooClient, get_quarter_dates
+from ubl_generator import UBLGenerator
+
+# Configure logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
+def lambda_handler(event: dict, context) -> dict:
+    """Main Lambda handler for UBL export.
+
+    Supports two modes:
+    1. Manual trigger via API with parameters
+    2. Scheduled quarterly export (auto_quarter=true)
+
+    Event Parameters:
+        quarter: Q1, Q2, Q3, Q4 (optional if date_from/date_to provided)
+        year: Year as integer (optional if date_from/date_to provided)
+        date_from: Start date as YYYY-MM-DD (optional)
+        date_to: End date as YYYY-MM-DD (optional)
+
+        # Filter options (override environment defaults)
+        direction: "both" | "outgoing" | "incoming"
+        document_type: "all" | "invoice" | "refund"
+        state_filter: "posted" | "posted_draft_bills" | "posted_draft_invoices" |
+                      "posted_draft" | "all"
+        custom_domain: Odoo domain string
+
+        # Email options
+        send_email: send results via email (default: true if ubl_email configured)
+        ubl_email: Override UBL recipient
+        pdf_email: Override PDF recipient
+
+        # Auto mode
+        auto_quarter: true for scheduled quarterly export
+
+    Returns:
+        Response with export results, S3 location, or download URL
+    """
+    logger.info(f"Received event: {json.dumps(event)}")
+
+    try:
+        # Load config from environment and event overrides
+        config = ExportConfig.from_event(event)
+
+        # Validate Odoo credentials
+        if not all([config.odoo_url, config.odoo_database,
+                    config.odoo_username, config.odoo_api_key]):
+            return _error_response(400, "Missing Odoo credentials")
+
+        # Handle auto quarterly export
+        if event.get("auto_quarter"):
+            return _handle_auto_quarterly_export(config)
+
+        # Parse date range for manual export
+        date_from, date_to, quarter, year = _parse_date_range(event)
+        if not date_from or not date_to:
+            return _error_response(
+                400, "Missing date range (provide quarter+year or date_from+date_to)"
+            )
+
+        logger.info(f"Exporting invoices from {date_from} to {date_to}")
+        logger.info(f"Filters: direction={config.direction}, "
+                    f"document_type={config.document_type}, "
+                    f"state_filter={config.state_filter}")
+
+        # Connect to Odoo
+        client = OdooClient(
+            config.odoo_url, config.odoo_database,
+            config.odoo_username, config.odoo_api_key
+        )
+        client.authenticate()
+        logger.info(f"Authenticated as user {client.uid}")
+
+        # Run export
+        result = _run_export(config, client, date_from, date_to, quarter, year)
+
+        # Send email via Odoo's mail system (enabled by default if ubl_email is set)
+        send_email = event.get("send_email", True)  # Default to True
+        if send_email and config.ubl_email:
+            _send_ubl_email(config, result, quarter, year, client)
+
+        return result
+
+    except Exception as e:
+        logger.exception("Export failed")
+        return _error_response(500, str(e))
+
+
+def _handle_auto_quarterly_export(config: ExportConfig) -> dict:
+    """Handle scheduled quarterly export.
+
+    Determines the previous quarter and runs export with email sending.
+    """
+    today = date.today()
+
+    # Check if today is the configured send day
+    if today.day != config.send_day:
+        return _success_response({
+            "message": f"Not send day (today={today.day}, configured={config.send_day})",
+            "skipped": True,
+        })
+
+    # Check if we're in a "send month" (Jan, Apr, Jul, Oct)
+    send_months = [1, 4, 7, 10]
+    if today.month not in send_months:
+        return _success_response({
+            "message": f"Not a send month (today={today.month})",
+            "skipped": True,
+        })
+
+    # Determine previous quarter
+    quarter_map = {1: ("Q4", -1), 4: ("Q1", 0), 7: ("Q2", 0), 10: ("Q3", 0)}
+    quarter, year_offset = quarter_map[today.month]
+    year = today.year + year_offset
+
+    logger.info(f"Auto quarterly export for {quarter} {year}")
+
+    # Get date range
+    date_from, date_to = get_quarter_dates(quarter, year)
+
+    # Connect to Odoo
+    client = OdooClient(
+        config.odoo_url, config.odoo_database,
+        config.odoo_username, config.odoo_api_key
+    )
+    client.authenticate()
+    logger.info(f"Authenticated as user {client.uid}")
+
+    # Run export
+    result = _run_export(config, client, date_from, date_to, quarter, str(year))
+
+    # Send emails via Odoo's mail system
+    if config.ubl_email:
+        _send_ubl_email(config, result, quarter, str(year), client)
+
+    return result
+
+
+def _run_export(
+    config: ExportConfig,
+    client: OdooClient,
+    date_from: date,
+    date_to: date,
+    quarter: str | None,
+    year: str | None,
+) -> dict:
+    """Run the actual export process.
+
+    Args:
+        config: Export configuration
+        client: Authenticated Odoo client
+        date_from: Start date
+        date_to: End date
+        quarter: Quarter string (for filename)
+        year: Year string (for filename)
+
+    Returns:
+        Response dict with export results
+    """
+    # Get company info
+    company = client.get_company()
+    logger.info(f"Company: {company.get('name')}")
+
+    # Build domain for invoice search
+    move_types = config.get_move_types()
+    if not move_types:
+        return _success_response({
+            "message": "No move types selected (check direction/document_type filters)",
+            "count": 0,
+        })
+
+    # Fetch invoices with filters
+    invoices = _fetch_invoices(client, config, date_from, date_to, move_types)
+    logger.info(f"Found {len(invoices)} invoices")
+
+    if not invoices:
+        return _success_response({
+            "message": "No invoices found for the specified criteria",
+            "count": 0,
+            "filters": {
+                "direction": config.direction,
+                "document_type": config.document_type,
+                "state_filter": config.state_filter,
+            },
+        })
+
+    # Fetch related data (lines, partners, taxes, products)
+    lines_by_invoice, partners, taxes, products = _fetch_related_data(
+        client, invoices
+    )
+
+    # Generate UBL files
+    generator = UBLGenerator(company)
+    ubl_files = []  # List of (filename, xml_bytes)
+
+    for invoice in invoices:
+        try:
+            partner_id = invoice.get("partner_id")
+            if isinstance(partner_id, (list, tuple)):
+                partner_id = partner_id[0]
+            partner = partners.get(partner_id, {})
+
+            lines = lines_by_invoice.get(invoice["id"], [])
+
+            xml_content = generator.generate_invoice(
+                invoice, partner, lines, taxes, products
+            )
+
+            filename = f"{invoice['name'].replace('/', '-')}.xml"
+            ubl_files.append((filename, xml_content))
+            logger.info(f"Generated UBL for {invoice['name']}")
+
+        except Exception as e:
+            logger.error(f"Failed to generate UBL for {invoice['name']}: {e}")
+
+    # Create ZIP
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for filename, xml_content in ubl_files:
+            zf.writestr(f"UBL/{filename}", xml_content)
+
+    zip_buffer.seek(0)
+    zip_data = zip_buffer.getvalue()
+
+    # Generate filename
+    if quarter and year:
+        zip_filename = f"UBL_Export_{year}_{quarter}.zip"
+    else:
+        zip_filename = f"UBL_Export_{date_from}_{date_to}.zip"
+
+    # Store result
+    result_data = {
+        "message": f"Exported {len(ubl_files)} invoices",
+        "count": len(ubl_files),
+        "total_found": len(invoices),
+        "filename": zip_filename,
+        "company": company.get("name"),
+        "period": {
+            "from": str(date_from),
+            "to": str(date_to),
+            "quarter": quarter,
+            "year": year,
+        },
+        "filters": {
+            "direction": config.direction,
+            "document_type": config.document_type,
+            "state_filter": config.state_filter,
+        },
+    }
+
+    # Upload to S3 if configured
+    if config.s3_bucket:
+        import boto3
+        s3 = boto3.client("s3")
+        s3_key = f"exports/{zip_filename}"
+        s3.put_object(
+            Bucket=config.s3_bucket,
+            Key=s3_key,
+            Body=zip_data,
+            ContentType="application/zip",
+        )
+        logger.info(f"Uploaded to s3://{config.s3_bucket}/{s3_key}")
+
+        # Generate presigned URL
+        presigned_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": config.s3_bucket, "Key": s3_key},
+            ExpiresIn=3600,
+        )
+
+        result_data["s3_bucket"] = config.s3_bucket
+        result_data["s3_key"] = s3_key
+        result_data["download_url"] = presigned_url
+        result_data["_zip_data"] = zip_data  # For email sending
+
+        return _success_response(result_data)
+
+    else:
+        # Return base64 encoded ZIP directly
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Content-Type": "application/zip",
+                "Content-Disposition": f"attachment; filename={zip_filename}",
+            },
+            "body": base64.b64encode(zip_data).decode("utf-8"),
+            "isBase64Encoded": True,
+            "_result_data": result_data,  # Metadata
+        }
+
+
+def _fetch_invoices(
+    client: OdooClient,
+    config: ExportConfig,
+    date_from: date,
+    date_to: date,
+    move_types: list[str],
+) -> list[dict]:
+    """Fetch invoices with all configured filters.
+
+    Args:
+        client: Odoo client
+        config: Export configuration
+        date_from: Start date
+        date_to: End date
+        move_types: List of move types to include
+
+    Returns:
+        List of invoice dictionaries
+    """
+    # Build domain
+    domain = [
+        ("move_type", "in", move_types),
+        ("invoice_date", ">=", date_from.isoformat()),
+        ("invoice_date", "<=", date_to.isoformat()),
+    ]
+
+    # Add state filter
+    state_domain = config.get_state_domain()
+    domain.extend(state_domain)
+
+    # Add custom domain if specified
+    custom_domain = config.parse_custom_domain()
+    if custom_domain:
+        # For simple domains, we can apply them
+        # Complex OR domains may not work perfectly via XML-RPC
+        for clause in custom_domain:
+            if isinstance(clause, (list, tuple)) and len(clause) == 3:
+                domain.append(tuple(clause))
+
+    logger.info(f"Invoice search domain: {domain}")
+
+    fields = [
+        "id", "name", "move_type", "state", "invoice_date", "invoice_date_due",
+        "partner_id", "currency_id", "amount_untaxed", "amount_tax",
+        "amount_total", "payment_reference", "narration", "invoice_line_ids",
+        "company_id", "ref",
+    ]
+
+    return client.search_read(
+        "account.move", domain, fields=fields, order="invoice_date, name"
+    )
+
+
+def _fetch_related_data(
+    client: OdooClient, invoices: list[dict]
+) -> tuple[dict, dict, dict, dict]:
+    """Fetch all related data for invoices.
+
+    Args:
+        client: Odoo client
+        invoices: List of invoice dicts
+
+    Returns:
+        Tuple of (lines_by_invoice, partners, taxes, products)
+    """
+    all_line_ids = []
+    all_partner_ids = set()
+    all_tax_ids = set()
+    all_product_ids = set()
+
+    for invoice in invoices:
+        all_line_ids.extend(invoice.get("invoice_line_ids", []))
+        if invoice.get("partner_id"):
+            partner_id = invoice["partner_id"]
+            if isinstance(partner_id, (list, tuple)):
+                partner_id = partner_id[0]
+            all_partner_ids.add(partner_id)
+
+    # Fetch lines
+    lines_by_invoice = {}
+    if all_line_ids:
+        all_lines = client.get_invoice_lines(all_line_ids)
+        for line in all_lines:
+            move_id = line.get("move_id")
+            if isinstance(move_id, (list, tuple)):
+                move_id = move_id[0]
+            if move_id not in lines_by_invoice:
+                lines_by_invoice[move_id] = []
+            lines_by_invoice[move_id].append(line)
+
+            # Collect tax and product IDs
+            for tax_id in line.get("tax_ids", []):
+                all_tax_ids.add(tax_id)
+            product_id = line.get("product_id")
+            if product_id:
+                if isinstance(product_id, (list, tuple)):
+                    product_id = product_id[0]
+                all_product_ids.add(product_id)
+
+    # Fetch partners
+    partners = {}
+    if all_partner_ids:
+        partner_list = client.read("res.partner", list(all_partner_ids), [
+            "id", "name", "vat", "street", "street2", "city", "zip",
+            "country_id", "email", "phone"
+        ])
+        partners = {p["id"]: p for p in partner_list}
+
+    # Fetch taxes
+    taxes = {}
+    if all_tax_ids:
+        tax_list = client.get_taxes(list(all_tax_ids))
+        taxes = {t["id"]: t for t in tax_list}
+
+    # Fetch products
+    products = {}
+    if all_product_ids:
+        product_list = client.get_products(list(all_product_ids))
+        products = {p["id"]: p for p in product_list}
+
+    return lines_by_invoice, partners, taxes, products
+
+
+def _send_ubl_email(
+    config: ExportConfig,
+    result: dict,
+    quarter: str,
+    year: str,
+    odoo_client: OdooClient,
+) -> bool:
+    """Send UBL export via Odoo's email system.
+
+    Args:
+        config: Export configuration
+        result: Export result dict
+        quarter: Quarter string
+        year: Year string
+        odoo_client: Connected Odoo client for sending email
+
+    Returns:
+        True if sent successfully
+    """
+    if not config.ubl_email:
+        logger.warning("UBL email not configured, skipping")
+        return False
+
+    try:
+        # Get ZIP data
+        zip_data = result.get("_zip_data")
+        if not zip_data and config.s3_bucket:
+            # Download from S3
+            import boto3
+            s3 = boto3.client("s3")
+            s3_key = result.get("s3_key")
+            if s3_key:
+                response = s3.get_object(Bucket=config.s3_bucket, Key=s3_key)
+                zip_data = response["Body"].read()
+
+        if not zip_data:
+            logger.error("No ZIP data available for email")
+            return False
+
+        # Extract individual XML files for BilltoBox
+        # (BilltoBox prefers individual files, not ZIP)
+        attachments = []
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+            for name in zf.namelist():
+                if name.endswith(".xml"):
+                    xml_data = zf.read(name)
+                    filename = name.split("/")[-1]  # Remove UBL/ prefix
+                    attachments.append((filename, xml_data, "application/xml"))
+
+        if not attachments:
+            logger.warning("No XML files in ZIP")
+            return False
+
+        # Get company name from result
+        company_name = result.get("company", "Unknown Company")
+        body = result.get("body", {})
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+                company_name = body.get("company", company_name)
+            except json.JSONDecodeError:
+                pass
+
+        # Send email via Odoo
+        sender = OdooEmailSender(odoo_client)
+        return sender.send_ubl_export(
+            recipient=config.ubl_email,
+            company_name=company_name,
+            quarter=quarter or "Export",
+            year=year or str(date.today().year),
+            attachments=attachments,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to send email via Odoo: {e}")
+        return False
+
+
+def _parse_date_range(event: dict) -> tuple[date | None, date | None, str | None, str | None]:
+    """Parse date range from event.
+
+    Args:
+        event: Lambda event
+
+    Returns:
+        Tuple of (date_from, date_to, quarter, year)
+    """
+    # Try quarter + year first
+    quarter = event.get("quarter")
+    year = event.get("year")
+    if quarter and year:
+        date_from, date_to = get_quarter_dates(quarter, int(year))
+        return date_from, date_to, quarter, str(year)
+
+    # Try explicit date range
+    date_from_str = event.get("date_from")
+    date_to_str = event.get("date_to")
+    if date_from_str and date_to_str:
+        return (
+            date.fromisoformat(date_from_str),
+            date.fromisoformat(date_to_str),
+            None,
+            None,
+        )
+
+    return None, None, None, None
+
+
+def _success_response(data: dict) -> dict:
+    """Create success response."""
+    # Remove internal keys
+    clean_data = {k: v for k, v in data.items() if not k.startswith("_")}
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(clean_data),
+    }
+
+
+def _error_response(status_code: int, message: str) -> dict:
+    """Create error response."""
+    return {
+        "statusCode": status_code,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({"error": message}),
+    }
+
+
+# For local testing
+if __name__ == "__main__":
+    import sys
+
+    # Load from .env file if present
+    env_file = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(env_file):
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    os.environ[key.strip()] = value.strip()
+
+    # Default to previous quarter
+    today = date.today()
+    current_quarter = (today.month - 1) // 3 + 1
+    if current_quarter == 1:
+        quarter = "Q4"
+        year = today.year - 1
+    else:
+        quarter = f"Q{current_quarter - 1}"
+        year = today.year
+
+    # Parse command line args
+    if len(sys.argv) >= 3:
+        quarter = sys.argv[1]
+        year = int(sys.argv[2])
+
+    event = {
+        "quarter": quarter,
+        "year": year,
+    }
+
+    # Optional: override filters via args
+    if len(sys.argv) >= 4:
+        event["direction"] = sys.argv[3]  # e.g., "outgoing"
+    if len(sys.argv) >= 5:
+        event["state_filter"] = sys.argv[4]  # e.g., "posted_draft"
+
+    print(f"Testing export for {quarter} {year}...")
+    print(f"Filters: direction={event.get('direction', 'both')}, "
+          f"state={event.get('state_filter', 'posted')}")
+
+    result = lambda_handler(event, None)
+    print(f"Status: {result['statusCode']}")
+
+    if result.get("isBase64Encoded"):
+        # Save ZIP file
+        zip_data = base64.b64decode(result["body"])
+        filename = result["headers"].get("Content-Disposition", "").split("filename=")[-1]
+        if not filename:
+            filename = f"export_{quarter}_{year}.zip"
+        with open(filename, "wb") as f:
+            f.write(zip_data)
+        print(f"Saved to {filename}")
+    else:
+        print(result["body"])

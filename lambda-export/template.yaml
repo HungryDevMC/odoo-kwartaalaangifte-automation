@@ -1,0 +1,249 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Odoo UBL Export Lambda - Export invoices from Odoo Online to Peppol BIS 3.0 UBL XML
+  with full configuration options matching the Odoo module.
+
+Parameters:
+  # === Odoo Connection ===
+  OdooUrl:
+    Type: String
+    Description: Your Odoo Online URL (e.g., https://mycompany.odoo.com)
+  OdooDatabase:
+    Type: String
+    Description: Database name (usually your subdomain, e.g., mycompany)
+  OdooUsername:
+    Type: String
+    Description: Odoo user email address
+  OdooApiKey:
+    Type: String
+    Description: Odoo API key (generate in Settings → Users → API Keys)
+    NoEcho: true
+
+  # === Filter Settings ===
+  Direction:
+    Type: String
+    Default: both
+    AllowedValues:
+      - both
+      - outgoing
+      - incoming
+    Description: >
+      Direction filter:
+      both = all invoices & bills,
+      outgoing = customer invoices only,
+      incoming = vendor bills only
+  DocumentType:
+    Type: String
+    Default: all
+    AllowedValues:
+      - all
+      - invoice
+      - refund
+    Description: >
+      Document type filter:
+      all = invoices & credit notes,
+      invoice = invoices only,
+      refund = credit notes only
+  StateFilter:
+    Type: String
+    Default: posted
+    AllowedValues:
+      - posted
+      - posted_draft_bills
+      - posted_draft_invoices
+      - posted_draft
+      - all
+    Description: >
+      State filter:
+      posted = only validated invoices,
+      posted_draft_bills = + draft vendor bills,
+      posted_draft_invoices = + draft customer invoices,
+      posted_draft = + all drafts,
+      all = all states
+  CustomDomain:
+    Type: String
+    Default: ""
+    Description: >
+      Optional custom Odoo domain filter (JSON format).
+      Example: [["partner_id.country_id.code", "=", "BE"]]
+
+  # === Email Settings ===
+  SenderEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Sender email address (must be verified in AWS SES).
+      Leave empty to disable email sending.
+  UblEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Email address for UBL files (e.g., BilltoBox import address).
+      Example: upload@billtobox.be
+  PdfEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Email address for bank statement PDFs (e.g., accountant email).
+
+  # === Quarterly Auto-Send ===
+  SendDay:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 28
+    Description: Day of month to send quarterly exports (1-28)
+  BankJournalIds:
+    Type: String
+    Default: ""
+    Description: >
+      Comma-separated bank journal IDs for statement exports.
+      Example: 7,8,9
+
+Globals:
+  Function:
+    Timeout: 300  # 5 minutes
+    MemorySize: 256
+    Runtime: python3.12
+
+Resources:
+  # S3 bucket for storing exports
+  ExportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-exports"
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldExports
+            Status: Enabled
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Main export Lambda function
+  UblExportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-export"
+      Handler: handler.lambda_handler
+      CodeUri: .
+      Description: Export invoices from Odoo Online to UBL XML
+      Environment:
+        Variables:
+          # Odoo connection
+          ODOO_URL: !Ref OdooUrl
+          ODOO_DATABASE: !Ref OdooDatabase
+          ODOO_USERNAME: !Ref OdooUsername
+          ODOO_API_KEY: !Ref OdooApiKey
+          # Filters
+          DIRECTION: !Ref Direction
+          DOCUMENT_TYPE: !Ref DocumentType
+          STATE_FILTER: !Ref StateFilter
+          CUSTOM_DOMAIN: !Ref CustomDomain
+          # Email
+          SENDER_EMAIL: !Ref SenderEmail
+          UBL_EMAIL: !Ref UblEmail
+          PDF_EMAIL: !Ref PdfEmail
+          # Quarterly settings
+          SEND_DAY: !Ref SendDay
+          BANK_JOURNAL_IDS: !Ref BankJournalIds
+          # S3
+          S3_BUCKET: !Ref ExportBucket
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ExportBucket
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+      Events:
+        # HTTP API endpoint for manual triggers
+        HttpApi:
+          Type: HttpApi
+          Properties:
+            Path: /export
+            Method: POST
+        # Scheduled quarterly export
+        # Runs daily at 6:00 UTC, but only executes on send_day in Jan/Apr/Jul/Oct
+        QuarterlySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 6 1-28 1,4,7,10 ? *)
+            Description: Quarterly UBL export (checks send_day internally)
+            Enabled: true
+            Input: '{"auto_quarter": true}'
+
+  # Download handler
+  DownloadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-download"
+      Handler: download_handler.lambda_handler
+      CodeUri: .
+      Description: Get presigned URL for downloading exports
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref ExportBucket
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref ExportBucket
+      Events:
+        HttpApi:
+          Type: HttpApi
+          Properties:
+            Path: /download/{filename}
+            Method: GET
+
+  # List exports handler
+  ListExportsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-list"
+      Handler: list_handler.lambda_handler
+      CodeUri: .
+      Description: List available exports
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref ExportBucket
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref ExportBucket
+      Events:
+        HttpApi:
+          Type: HttpApi
+          Properties:
+            Path: /exports
+            Method: GET
+
+Outputs:
+  ExportApiEndpoint:
+    Description: API endpoint for triggering exports
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/export"
+  ListApiEndpoint:
+    Description: API endpoint for listing exports
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/exports"
+  DownloadApiEndpoint:
+    Description: API endpoint for downloading exports
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/download/{filename}"
+  ExportBucketName:
+    Description: S3 bucket containing exports
+    Value: !Ref ExportBucket
+  FunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt UblExportFunction.Arn
+  ConfiguredFilters:
+    Description: Configured export filters
+    Value: !Sub "direction=${Direction}, document_type=${DocumentType}, state=${StateFilter}"

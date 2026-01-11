@@ -1,0 +1,234 @@
+# ============================================================
+# Deploy Odoo UBL Export Lambda to AWS
+# ============================================================
+# Deploys both GESP and EVOLF environments to the same AWS account
+# ============================================================
+
+name: Deploy to AWS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'lambda-export/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'lambda-export/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy (all, gesp, evolf)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - gesp
+          - evolf
+
+env:
+  AWS_REGION: eu-west-1
+  TF_VERSION: 1.6.6
+
+jobs:
+  # ============================================================
+  # Validate Terraform
+  # ============================================================
+  validate:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        working-directory: lambda-export/terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init (no backend)
+        working-directory: lambda-export/terraform
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        working-directory: lambda-export/terraform
+        run: terraform validate
+
+  # ============================================================
+  # Deploy GESP
+  # ============================================================
+  deploy-gesp:
+    name: Deploy GESP
+    runs-on: ubuntu-latest
+    needs: validate
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'all' || github.event.inputs.environment == 'gesp'))
+    environment: gesp
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Create S3 Backend Bucket (if needed)
+        run: |
+          aws s3api head-bucket --bucket odoo-ubl-export-terraform-state 2>/dev/null || \
+          aws s3api create-bucket \
+            --bucket odoo-ubl-export-terraform-state \
+            --region ${{ env.AWS_REGION }} \
+            --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: lambda-export/terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=odoo-ubl-export-terraform-state" \
+            -backend-config="key=gesp/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: Terraform Plan
+        working-directory: lambda-export/terraform
+        env:
+          TF_VAR_odoo_url: ${{ secrets.GESP_ODOO_URL }}
+          TF_VAR_odoo_database: ${{ secrets.GESP_ODOO_DATABASE }}
+          TF_VAR_odoo_username: ${{ secrets.GESP_ODOO_USERNAME }}
+          TF_VAR_odoo_api_key: ${{ secrets.GESP_ODOO_API_KEY }}
+          TF_VAR_ubl_email: ${{ secrets.GESP_UBL_EMAIL }}
+          TF_VAR_pdf_email: ${{ secrets.GESP_PDF_EMAIL }}
+        run: |
+          terraform plan \
+            -var-file="environments/gesp.tfvars" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        working-directory: lambda-export/terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output Endpoints
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        working-directory: lambda-export/terraform
+        run: |
+          echo "### GESP Deployment Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Output | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| API Endpoint | $(terraform output -raw api_endpoint) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Export Endpoint | $(terraform output -raw export_endpoint) |" >> $GITHUB_STEP_SUMMARY
+          echo "| S3 Bucket | $(terraform output -raw s3_bucket) |" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # Deploy EVOLF
+  # ============================================================
+  deploy-evolf:
+    name: Deploy EVOLF
+    runs-on: ubuntu-latest
+    needs: validate
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'all' || github.event.inputs.environment == 'evolf'))
+    environment: evolf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Create S3 Backend Bucket (if needed)
+        run: |
+          aws s3api head-bucket --bucket odoo-ubl-export-terraform-state 2>/dev/null || \
+          aws s3api create-bucket \
+            --bucket odoo-ubl-export-terraform-state \
+            --region ${{ env.AWS_REGION }} \
+            --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        working-directory: lambda-export/terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=odoo-ubl-export-terraform-state" \
+            -backend-config="key=evolf/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: Terraform Plan
+        working-directory: lambda-export/terraform
+        env:
+          TF_VAR_odoo_url: ${{ secrets.EVOLF_ODOO_URL }}
+          TF_VAR_odoo_database: ${{ secrets.EVOLF_ODOO_DATABASE }}
+          TF_VAR_odoo_username: ${{ secrets.EVOLF_ODOO_USERNAME }}
+          TF_VAR_odoo_api_key: ${{ secrets.EVOLF_ODOO_API_KEY }}
+          TF_VAR_ubl_email: ${{ secrets.EVOLF_UBL_EMAIL }}
+          TF_VAR_pdf_email: ${{ secrets.EVOLF_PDF_EMAIL }}
+        run: |
+          terraform plan \
+            -var-file="environments/evolf.tfvars" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        working-directory: lambda-export/terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Output Endpoints
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        working-directory: lambda-export/terraform
+        run: |
+          echo "### EVOLF Deployment Outputs" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Output | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| API Endpoint | $(terraform output -raw api_endpoint) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Export Endpoint | $(terraform output -raw export_endpoint) |" >> $GITHUB_STEP_SUMMARY
+          echo "| S3 Bucket | $(terraform output -raw s3_bucket) |" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # Summary
+  # ============================================================
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [deploy-gesp, deploy-evolf]
+    if: always() && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| GESP | ${{ needs.deploy-gesp.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| EVOLF | ${{ needs.deploy-evolf.result }} |" >> $GITHUB_STEP_SUMMARY
+
