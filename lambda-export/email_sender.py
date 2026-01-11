@@ -175,9 +175,17 @@ class OdooEmailSender:
                 )
 
             # Send the email
-            self.client.execute("mail.mail", "send", [mail_id])
-            logger.info(f"Email sent to {recipient}: {subject}")
+            # Note: send() returns None which XML-RPC can't marshal, so we catch that
+            try:
+                self.client.execute("mail.mail", "send", [mail_id])
+            except Exception as send_error:
+                # If it's just the None marshalling error, the email was likely sent
+                if "cannot marshal None" in str(send_error):
+                    logger.info(f"Email queued successfully (send returned None)")
+                else:
+                    raise send_error
 
+            logger.info(f"Email sent to {recipient}: {subject}")
             return True
 
         except Exception as e:

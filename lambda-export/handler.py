@@ -218,6 +218,12 @@ def _run_export(
 
     for invoice in invoices:
         try:
+            # Skip invoices without a name (draft invoices not yet numbered)
+            invoice_name = invoice.get("name")
+            if not invoice_name or invoice_name is False:
+                logger.warning(f"Skipping invoice {invoice.get('id')} - no invoice number (draft?)")
+                continue
+
             partner_id = invoice.get("partner_id")
             if isinstance(partner_id, (list, tuple)):
                 partner_id = partner_id[0]
@@ -229,19 +235,21 @@ def _run_export(
                 invoice, partner, lines, taxes, products
             )
 
-            filename = f"{invoice['name'].replace('/', '-')}.xml"
+            filename = f"{invoice_name.replace('/', '-')}.xml"
             ubl_files.append((filename, xml_content))
-            logger.info(f"Generated UBL for {invoice['name']}")
+            logger.info(f"Generated UBL for {invoice_name}")
 
         except Exception as e:
-            logger.error(f"Failed to generate UBL for {invoice['name']}: {e}")
+            logger.error(f"Failed to generate UBL for invoice {invoice.get('id')}: {e}")
 
     # Fetch and render bank statements if enabled
     statement_pdfs = []  # List of (filename, pdf_bytes)
+    logger.info(f"Bank statements enabled: {config.include_bank_statements}")
     if config.include_bank_statements:
         statement_pdfs = _export_bank_statements(
             client, config, date_from, date_to
         )
+        logger.info(f"Exported {len(statement_pdfs)} bank statement PDFs")
 
     # Create ZIP
     zip_buffer = io.BytesIO()
