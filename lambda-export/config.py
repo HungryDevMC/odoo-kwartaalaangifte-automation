@@ -34,11 +34,11 @@ class ExportConfig:
 
     # === State Filter ===
     # "posted" = only posted/validated
-    # "posted_draft_bills" = posted + draft vendor bills
+    # "posted_draft_bills" = posted + draft vendor bills (DEFAULT)
     # "posted_draft_invoices" = posted + draft customer invoices
     # "posted_draft" = posted + all drafts
     # "all" = all states
-    state_filter: str = "posted"
+    state_filter: str = "posted_draft_bills"
 
     # === Custom Domain Filter ===
     # Odoo domain format, e.g.: [("partner_id.country_id.code", "=", "BE")]

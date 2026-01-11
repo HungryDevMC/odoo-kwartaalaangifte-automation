@@ -65,7 +65,7 @@ variable "document_type" {
 variable "state_filter" {
   description = "State filter: posted, posted_draft_bills, posted_draft_invoices, posted_draft, all"
   type        = string
-  default     = "posted"
+  default     = "posted_draft_bills"
 
   validation {
     condition     = contains(["posted", "posted_draft_bills", "posted_draft_invoices", "posted_draft", "all"], var.state_filter)

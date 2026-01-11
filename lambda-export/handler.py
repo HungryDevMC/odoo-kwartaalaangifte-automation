@@ -295,8 +295,16 @@ def _run_export(
         result_data["s3_key"] = s3_key
         result_data["download_url"] = presigned_url
         result_data["_zip_data"] = zip_data  # For email sending
+        result_data["_ubl_files"] = ubl_files  # For email sending (individual XMLs)
 
-        return _success_response(result_data)
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({k: v for k, v in result_data.items() if not k.startswith("_")}),
+            "_zip_data": zip_data,
+            "_ubl_files": ubl_files,
+            "_result_data": result_data,
+        }
 
     else:
         # Return base64 encoded ZIP directly
@@ -459,37 +467,52 @@ def _send_ubl_email(
         return False
 
     try:
-        # Get ZIP data
-        zip_data = result.get("_zip_data")
-        if not zip_data and config.s3_bucket:
-            # Download from S3
-            import boto3
-            s3 = boto3.client("s3")
-            s3_key = result.get("s3_key")
-            if s3_key:
-                response = s3.get_object(Bucket=config.s3_bucket, Key=s3_key)
-                zip_data = response["Body"].read()
+        # Get UBL files directly (preferred) or extract from ZIP
+        ubl_files = result.get("_ubl_files")
+        
+        if ubl_files:
+            # Use pre-generated UBL files directly
+            attachments = [
+                (filename, xml_data, "application/xml")
+                for filename, xml_data in ubl_files
+            ]
+        else:
+            # Fallback: try to get ZIP data and extract
+            zip_data = result.get("_zip_data")
+            if not zip_data:
+                # Try to get from nested _result_data
+                result_data = result.get("_result_data", {})
+                zip_data = result_data.get("_zip_data")
+            
+            if not zip_data and config.s3_bucket:
+                # Download from S3
+                import boto3
+                s3 = boto3.client("s3")
+                s3_key = result.get("s3_key") or result.get("_result_data", {}).get("s3_key")
+                if s3_key:
+                    logger.info(f"Downloading ZIP from S3: {s3_key}")
+                    response = s3.get_object(Bucket=config.s3_bucket, Key=s3_key)
+                    zip_data = response["Body"].read()
 
-        if not zip_data:
-            logger.error("No ZIP data available for email")
-            return False
+            if not zip_data:
+                logger.error("No ZIP data available for email")
+                return False
 
-        # Extract individual XML files for BilltoBox
-        # (BilltoBox prefers individual files, not ZIP)
-        attachments = []
-        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
-            for name in zf.namelist():
-                if name.endswith(".xml"):
-                    xml_data = zf.read(name)
-                    filename = name.split("/")[-1]  # Remove UBL/ prefix
-                    attachments.append((filename, xml_data, "application/xml"))
+            # Extract individual XML files for BilltoBox
+            attachments = []
+            with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+                for name in zf.namelist():
+                    if name.endswith(".xml"):
+                        xml_data = zf.read(name)
+                        filename = name.split("/")[-1]  # Remove UBL/ prefix
+                        attachments.append((filename, xml_data, "application/xml"))
 
         if not attachments:
-            logger.warning("No XML files in ZIP")
+            logger.warning("No XML files to send")
             return False
 
         # Get company name from result
-        company_name = result.get("company", "Unknown Company")
+        company_name = result.get("company") or result.get("_result_data", {}).get("company", "Unknown Company")
         body = result.get("body", {})
         if isinstance(body, str):
             try:
@@ -497,6 +520,8 @@ def _send_ubl_email(
                 company_name = body.get("company", company_name)
             except json.JSONDecodeError:
                 pass
+
+        logger.info(f"Sending {len(attachments)} UBL files to {config.ubl_email}")
 
         # Send email via Odoo
         sender = OdooEmailSender(odoo_client)
@@ -509,7 +534,7 @@ def _send_ubl_email(
         )
 
     except Exception as e:
-        logger.error(f"Failed to send email via Odoo: {e}")
+        logger.exception(f"Failed to send email via Odoo: {e}")
         return False
 
 
