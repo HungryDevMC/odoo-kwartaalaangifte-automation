@@ -236,26 +236,39 @@ def _run_export(
         except Exception as e:
             logger.error(f"Failed to generate UBL for {invoice['name']}: {e}")
 
+    # Fetch and render bank statements if enabled
+    statement_pdfs = []  # List of (filename, pdf_bytes)
+    if config.include_bank_statements:
+        statement_pdfs = _export_bank_statements(
+            client, config, date_from, date_to
+        )
+
     # Create ZIP
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Add UBL files
         for filename, xml_content in ubl_files:
             zf.writestr(f"UBL/{filename}", xml_content)
+
+        # Add bank statement PDFs
+        for filename, pdf_content in statement_pdfs:
+            zf.writestr(f"BankStatements/{filename}", pdf_content)
 
     zip_buffer.seek(0)
     zip_data = zip_buffer.getvalue()
 
     # Generate filename
     if quarter and year:
-        zip_filename = f"UBL_Export_{year}_{quarter}.zip"
+        zip_filename = f"Export_{year}_{quarter}.zip"
     else:
-        zip_filename = f"UBL_Export_{date_from}_{date_to}.zip"
+        zip_filename = f"Export_{date_from}_{date_to}.zip"
 
     # Store result
     result_data = {
-        "message": f"Exported {len(ubl_files)} invoices",
-        "count": len(ubl_files),
-        "total_found": len(invoices),
+        "message": f"Exported {len(ubl_files)} invoices, {len(statement_pdfs)} bank statements",
+        "invoice_count": len(ubl_files),
+        "statement_count": len(statement_pdfs),
+        "total_invoices_found": len(invoices),
         "filename": zip_filename,
         "company": company.get("name"),
         "period": {
@@ -268,6 +281,7 @@ def _run_export(
             "direction": config.direction,
             "document_type": config.document_type,
             "state_filter": config.state_filter,
+            "include_bank_statements": config.include_bank_statements,
         },
     }
 
@@ -441,6 +455,73 @@ def _fetch_related_data(
         products = {p["id"]: p for p in product_list}
 
     return lines_by_invoice, partners, taxes, products
+
+
+def _export_bank_statements(
+    client: OdooClient,
+    config: ExportConfig,
+    date_from: date,
+    date_to: date,
+) -> list[tuple[str, bytes]]:
+    """Export bank statements as PDFs.
+
+    Args:
+        client: Odoo client
+        config: Export configuration
+        date_from: Start date
+        date_to: End date
+
+    Returns:
+        List of (filename, pdf_bytes) tuples
+    """
+    statement_pdfs = []
+
+    try:
+        # Get journal IDs to filter by (if specified)
+        journal_ids = config.bank_journal_ids if config.bank_journal_ids else None
+
+        # Fetch bank statements
+        statements = client.get_bank_statements(date_from, date_to, journal_ids)
+        logger.info(f"Found {len(statements)} bank statements")
+
+        if not statements:
+            return []
+
+        # Try to render each statement as PDF
+        for statement in statements:
+            try:
+                statement_id = statement["id"]
+                statement_name = statement.get("name") or f"Statement_{statement_id}"
+                journal_name = "Bank"
+                
+                if statement.get("journal_id"):
+                    journal_data = statement["journal_id"]
+                    if isinstance(journal_data, (list, tuple)) and len(journal_data) > 1:
+                        journal_name = journal_data[1]
+
+                # Try to render PDF via Odoo's report engine
+                pdf_data = client.render_report_pdf(
+                    "account.report_bank_statement",
+                    [statement_id]
+                )
+
+                if pdf_data:
+                    # Clean filename
+                    safe_name = statement_name.replace("/", "-").replace("\\", "-")
+                    safe_journal = journal_name.replace("/", "-").replace("\\", "-")
+                    filename = f"{safe_journal}/{safe_name}.pdf"
+                    statement_pdfs.append((filename, pdf_data))
+                    logger.info(f"Generated PDF for statement {statement_name}")
+                else:
+                    logger.warning(f"Could not render PDF for statement {statement_name}")
+
+            except Exception as e:
+                logger.error(f"Failed to export statement {statement.get('name')}: {e}")
+
+    except Exception as e:
+        logger.error(f"Failed to fetch bank statements: {e}")
+
+    return statement_pdfs
 
 
 def _send_ubl_email(

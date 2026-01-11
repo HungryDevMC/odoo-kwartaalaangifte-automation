@@ -218,8 +218,9 @@ resource "aws_lambda_function" "export" {
       UBL_EMAIL = var.ubl_email
       PDF_EMAIL = var.pdf_email
       # Quarterly
-      SEND_DAY         = tostring(var.send_day)
-      BANK_JOURNAL_IDS = var.bank_journal_ids
+      SEND_DAY                = tostring(var.send_day)
+      BANK_JOURNAL_IDS        = var.bank_journal_ids
+      INCLUDE_BANK_STATEMENTS = tostring(var.include_bank_statements)
       # S3
       S3_BUCKET = aws_s3_bucket.exports.bucket
     }

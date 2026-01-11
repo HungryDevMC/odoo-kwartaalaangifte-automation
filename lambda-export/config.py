@@ -55,8 +55,12 @@ class ExportConfig:
     # === Quarterly Auto-Send ===
     # Day of month to send (1-28)
     send_day: int = 5
-    # Bank account/journal IDs to include in statement exports
+    # Bank account/journal IDs to include in statement exports (empty = all)
     bank_journal_ids: list[int] = field(default_factory=list)
+
+    # === Bank Statement Export ===
+    # Include bank statements in export
+    include_bank_statements: bool = True
 
     # === Output Settings ===
     # S3 bucket for storing exports
@@ -159,6 +163,7 @@ class ExportConfig:
             pdf_email=os.environ.get("PDF_EMAIL"),
             send_day=int(os.environ.get("SEND_DAY", "5")),
             bank_journal_ids=bank_journal_ids,
+            include_bank_statements=os.environ.get("INCLUDE_BANK_STATEMENTS", "true").lower() == "true",
             s3_bucket=os.environ.get("S3_BUCKET"),
         )
 
@@ -192,6 +197,7 @@ class ExportConfig:
             pdf_email=event.get("pdf_email", base_config.pdf_email),
             send_day=event.get("send_day", base_config.send_day),
             bank_journal_ids=event.get("bank_journal_ids", base_config.bank_journal_ids),
+            include_bank_statements=event.get("include_bank_statements", base_config.include_bank_statements),
             s3_bucket=event.get("s3_bucket", base_config.s3_bucket),
         )
 

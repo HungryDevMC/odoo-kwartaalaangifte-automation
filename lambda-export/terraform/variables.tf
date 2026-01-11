@@ -119,3 +119,9 @@ variable "enable_quarterly_schedule" {
   default     = true
 }
 
+variable "include_bank_statements" {
+  description = "Include bank statement PDFs in exports"
+  type        = bool
+  default     = true
+}
+

@@ -302,6 +302,123 @@ class OdooClient:
 
         return self.read("product.product", product_ids, fields=fields)
 
+    def get_bank_statements(
+        self,
+        date_from: date,
+        date_to: date,
+        journal_ids: list[int] | None = None,
+    ) -> list[dict]:
+        """Fetch bank statements for a date range.
+
+        Args:
+            date_from: Start date
+            date_to: End date
+            journal_ids: Optional list of journal IDs to filter by
+
+        Returns:
+            List of bank statement dictionaries
+        """
+        domain = [
+            ("date", ">=", date_from.isoformat()),
+            ("date", "<=", date_to.isoformat()),
+        ]
+
+        if journal_ids:
+            domain.append(("journal_id", "in", journal_ids))
+
+        fields = [
+            "id",
+            "name",
+            "date",
+            "journal_id",
+            "balance_start",
+            "balance_end_real",
+            "line_ids",
+        ]
+
+        return self.search_read(
+            "account.bank.statement",
+            domain,
+            fields=fields,
+            order="date, name",
+        )
+
+    def get_bank_journals(self) -> list[dict]:
+        """Get all bank/cash journals.
+
+        Returns:
+            List of journal dictionaries
+        """
+        domain = [("type", "in", ["bank", "cash"])]
+        fields = ["id", "name", "type", "bank_account_id"]
+
+        return self.search_read("account.journal", domain, fields=fields)
+
+    def render_report_pdf(
+        self, report_name: str, record_ids: list[int]
+    ) -> bytes | None:
+        """Render a report as PDF.
+
+        Args:
+            report_name: Report XML ID or name (e.g., 'account.report_bank_statement')
+            record_ids: List of record IDs to include in the report
+
+        Returns:
+            PDF content as bytes, or None if rendering failed
+        """
+        try:
+            # Try using report service
+            # Method 1: ir.actions.report render_qweb_pdf
+            result = self.execute(
+                "ir.actions.report",
+                "_render_qweb_pdf",
+                report_name,
+                record_ids,
+            )
+
+            if result and isinstance(result, (list, tuple)) and len(result) >= 1:
+                pdf_data = result[0]
+                if isinstance(pdf_data, bytes):
+                    return pdf_data
+                elif isinstance(pdf_data, str):
+                    # Base64 encoded
+                    import base64
+                    return base64.b64decode(pdf_data)
+
+            return None
+
+        except Exception as e:
+            # Method 2: Try alternative approach via report action
+            try:
+                # Find the report action
+                report_action = self.search_read(
+                    "ir.actions.report",
+                    [("report_name", "=", report_name)],
+                    ["id"],
+                    limit=1,
+                )
+
+                if report_action:
+                    result = self.execute(
+                        "ir.actions.report",
+                        "_render_qweb_pdf",
+                        [report_action[0]["id"]],
+                        record_ids,
+                    )
+
+                    if result and isinstance(result, (list, tuple)) and len(result) >= 1:
+                        pdf_data = result[0]
+                        if isinstance(pdf_data, bytes):
+                            return pdf_data
+                        elif isinstance(pdf_data, str):
+                            import base64
+                            return base64.b64decode(pdf_data)
+
+            except Exception as e2:
+                pass
+
+            return None
+
 
 def get_quarter_dates(quarter: str, year: int) -> tuple[date, date]:
     """Get start and end dates for a quarter.
