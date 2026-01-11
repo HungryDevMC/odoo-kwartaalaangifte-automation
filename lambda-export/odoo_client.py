@@ -343,6 +343,51 @@ class OdooClient:
             order="date, name",
         )
 
+    def get_bank_statement_lines(
+        self,
+        date_from: date,
+        date_to: date,
+        journal_ids: list[int] | None = None,
+    ) -> list[dict]:
+        """Fetch bank statement lines (transactions) for a date range.
+
+        In Odoo 14+, bank transactions may not be grouped into statements.
+        This fetches individual transaction lines.
+
+        Args:
+            date_from: Start date
+            date_to: End date
+            journal_ids: Optional list of journal IDs to filter by
+
+        Returns:
+            List of bank statement line dictionaries
+        """
+        domain = [
+            ("date", ">=", date_from.isoformat()),
+            ("date", "<=", date_to.isoformat()),
+        ]
+
+        if journal_ids:
+            domain.append(("journal_id", "in", journal_ids))
+
+        fields = [
+            "id",
+            "name",
+            "date",
+            "journal_id",
+            "amount",
+            "payment_ref",
+            "partner_id",
+            "statement_id",
+        ]
+
+        return self.search_read(
+            "account.bank.statement.line",
+            domain,
+            fields=fields,
+            order="date, id",
+        )
+
     def get_bank_journals(self) -> list[dict]:
         """Get all bank/cash journals.
 

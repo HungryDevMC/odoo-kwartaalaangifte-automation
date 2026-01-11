@@ -109,7 +109,9 @@ class UBLGenerator:
         )
 
         # Invoice number and dates
-        self._add_element(root, "cbc:ID", invoice["name"])
+        # Use _ubl_number if set (for vendor bills with ref), otherwise use name
+        invoice_number = invoice.get("_ubl_number") or invoice.get("name") or "UNKNOWN"
+        self._add_element(root, "cbc:ID", invoice_number)
 
         invoice_date = invoice.get("invoice_date")
         if isinstance(invoice_date, str):

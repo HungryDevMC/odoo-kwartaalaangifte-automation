@@ -219,11 +219,30 @@ def _run_export(
 
     for invoice in invoices:
         try:
-            # Skip invoices without a name (draft invoices not yet numbered)
+            # Determine invoice number for UBL and filename
+            # For vendor bills (in_invoice, in_refund): prefer vendor's reference (ref)
+            # For customer invoices (out_invoice, out_refund): use Odoo's name
+            move_type = invoice.get("move_type", "")
             invoice_name = invoice.get("name")
-            if not invoice_name or invoice_name is False:
-                logger.warning(f"Skipping invoice {invoice.get('id')} - no invoice number (draft?)")
-                continue
+            vendor_ref = invoice.get("ref")
+            
+            if move_type in ("in_invoice", "in_refund"):
+                # Vendor bill - use vendor's invoice reference
+                if vendor_ref and vendor_ref is not False:
+                    ubl_number = vendor_ref
+                elif invoice_name and invoice_name is not False and invoice_name != "/":
+                    ubl_number = invoice_name
+                else:
+                    # Generate from ID if nothing else available
+                    ubl_number = f"BILL-{invoice.get('id')}"
+                    logger.warning(f"Using generated number {ubl_number} for vendor bill (no ref or name)")
+            else:
+                # Customer invoice - use Odoo's name
+                if invoice_name and invoice_name is not False and invoice_name != "/":
+                    ubl_number = invoice_name
+                else:
+                    logger.warning(f"Skipping customer invoice {invoice.get('id')} - no invoice number")
+                    continue
 
             partner_id = invoice.get("partner_id")
             if isinstance(partner_id, (list, tuple)):
@@ -232,13 +251,17 @@ def _run_export(
 
             lines = lines_by_invoice.get(invoice["id"], [])
 
+            # Override invoice name with our determined UBL number
+            invoice_copy = dict(invoice)
+            invoice_copy["_ubl_number"] = ubl_number
+
             xml_content = generator.generate_invoice(
-                invoice, partner, lines, taxes, products
+                invoice_copy, partner, lines, taxes, products
             )
 
-            filename = f"{invoice_name.replace('/', '-')}.xml"
+            filename = f"{ubl_number.replace('/', '-').replace(' ', '_')}.xml"
             ubl_files.append((filename, xml_content))
-            logger.info(f"Generated UBL for {invoice_name}")
+            logger.info(f"Generated UBL for {ubl_number} (type: {move_type})")
 
         except Exception as e:
             logger.error(f"Failed to generate UBL for invoice {invoice.get('id')}: {e}")
@@ -489,9 +512,17 @@ def _export_bank_statements(
         # Get journal IDs to filter by (if specified)
         journal_ids = config.bank_journal_ids if config.bank_journal_ids else None
 
-        # Fetch bank statements
+        # Fetch bank statements (the document model)
         statements = client.get_bank_statements(date_from, date_to, journal_ids)
-        logger.info(f"Found {len(statements)} bank statements")
+        logger.info(f"Found {len(statements)} bank statements (account.bank.statement)")
+
+        # Also check for statement lines (transactions) - in Odoo 14+ these may exist without statements
+        try:
+            statement_lines = client.get_bank_statement_lines(date_from, date_to, journal_ids)
+            logger.info(f"Found {len(statement_lines)} bank transaction lines (account.bank.statement.line)")
+        except Exception as e:
+            logger.warning(f"Could not fetch statement lines: {e}")
+            statement_lines = []
 
         if not statements:
             return []
