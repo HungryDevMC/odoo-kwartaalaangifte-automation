@@ -62,6 +62,10 @@ class ExportConfig:
     # Include bank statements in export
     include_bank_statements: bool = True
 
+    # === Email Options ===
+    # Send UBL files as ZIP attachment (vs individual XML files)
+    send_ubl_as_zip: bool = True
+
     # === Output Settings ===
     # S3 bucket for storing exports
     s3_bucket: Optional[str] = None
@@ -164,6 +168,7 @@ class ExportConfig:
             send_day=int(os.environ.get("SEND_DAY", "5")),
             bank_journal_ids=bank_journal_ids,
             include_bank_statements=os.environ.get("INCLUDE_BANK_STATEMENTS", "true").lower() == "true",
+            send_ubl_as_zip=os.environ.get("SEND_UBL_AS_ZIP", "true").lower() == "true",
             s3_bucket=os.environ.get("S3_BUCKET"),
         )
 
@@ -198,6 +203,7 @@ class ExportConfig:
             send_day=event.get("send_day", base_config.send_day),
             bank_journal_ids=event.get("bank_journal_ids", base_config.bank_journal_ids),
             include_bank_statements=event.get("include_bank_statements", base_config.include_bank_statements),
+            send_ubl_as_zip=event.get("send_ubl_as_zip", base_config.send_ubl_as_zip),
             s3_bucket=event.get("s3_bucket", base_config.s3_bucket),
         )
 

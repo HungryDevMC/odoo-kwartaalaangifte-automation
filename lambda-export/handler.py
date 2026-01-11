@@ -489,6 +489,55 @@ def _fetch_related_data(
     return lines_by_invoice, partners, taxes, products
 
 
+def _generate_bank_transactions_csv(statement_lines: list[dict]) -> bytes:
+    """Generate a CSV export of bank transaction lines.
+
+    Args:
+        statement_lines: List of bank statement line dicts from Odoo
+
+    Returns:
+        CSV content as bytes
+    """
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header row
+    writer.writerow([
+        "Date",
+        "Journal",
+        "Reference",
+        "Partner",
+        "Amount",
+    ])
+
+    # Data rows
+    for line in statement_lines:
+        journal_name = ""
+        if line.get("journal_id"):
+            journal_data = line["journal_id"]
+            if isinstance(journal_data, (list, tuple)) and len(journal_data) > 1:
+                journal_name = journal_data[1]
+
+        partner_name = ""
+        if line.get("partner_id"):
+            partner_data = line["partner_id"]
+            if isinstance(partner_data, (list, tuple)) and len(partner_data) > 1:
+                partner_name = partner_data[1]
+
+        writer.writerow([
+            line.get("date", ""),
+            journal_name,
+            line.get("payment_ref") or line.get("name", ""),
+            partner_name,
+            line.get("amount", 0),
+        ])
+
+    return output.getvalue().encode("utf-8")
+
+
 def _export_bank_statements(
     client: OdooClient,
     config: ExportConfig,
@@ -517,12 +566,20 @@ def _export_bank_statements(
         logger.info(f"Found {len(statements)} bank statements (account.bank.statement)")
 
         # Also check for statement lines (transactions) - in Odoo 14+ these may exist without statements
+        statement_lines = []
         try:
             statement_lines = client.get_bank_statement_lines(date_from, date_to, journal_ids)
             logger.info(f"Found {len(statement_lines)} bank transaction lines (account.bank.statement.line)")
         except Exception as e:
             logger.warning(f"Could not fetch statement lines: {e}")
-            statement_lines = []
+
+        # If no formal statements but we have transaction lines, generate CSV export
+        if not statements and statement_lines:
+            logger.info("No formal statements, generating CSV from transaction lines")
+            csv_content = _generate_bank_transactions_csv(statement_lines)
+            if csv_content:
+                statement_pdfs.append(("Bank_Transactions.csv", csv_content))
+                logger.info("Generated bank transactions CSV")
 
         if not statements:
             return []
@@ -642,7 +699,7 @@ def _send_ubl_email(
             except json.JSONDecodeError:
                 pass
 
-        logger.info(f"Sending {len(attachments)} UBL files to {config.ubl_email}")
+        logger.info(f"Sending {len(attachments)} UBL files to {config.ubl_email} (as_zip={config.send_ubl_as_zip})")
 
         # Send email via Odoo
         sender = OdooEmailSender(odoo_client)
@@ -652,6 +709,7 @@ def _send_ubl_email(
             quarter=quarter or "Export",
             year=year or str(date.today().year),
             attachments=attachments,
+            as_zip=config.send_ubl_as_zip,
         )
 
     except Exception as e:

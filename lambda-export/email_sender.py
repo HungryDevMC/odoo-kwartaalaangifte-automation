@@ -27,6 +27,7 @@ class OdooEmailSender:
         year: str,
         attachments: list[tuple[str, bytes, str]],
         subject_prefix: str = "",
+        as_zip: bool = True,
     ) -> bool:
         """Send UBL XML files via Odoo email.
 
@@ -37,19 +38,47 @@ class OdooEmailSender:
             year: Year
             attachments: List of (filename, data, mimetype) tuples
             subject_prefix: Optional prefix for subject
+            as_zip: If True, bundle all files into a single ZIP attachment
 
         Returns:
             True if sent successfully
         """
         subject = f"{subject_prefix}{company_name} - UBL Export {quarter} {year}".strip()
-        body = f"""
+        
+        if as_zip and len(attachments) > 1:
+            # Bundle into ZIP
+            import io
+            import zipfile
+            
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for filename, data, mimetype in attachments:
+                    zf.writestr(filename, data)
+            
+            zip_buffer.seek(0)
+            zip_data = zip_buffer.getvalue()
+            zip_filename = f"UBL_Export_{quarter}_{year}.zip"
+            
+            final_attachments = [(zip_filename, zip_data, "application/zip")]
+            body = f"""
+<p>Quarterly UBL export for <strong>{quarter} {year}</strong></p>
+<p><strong>Company:</strong> {company_name}</p>
+<p><strong>Documents:</strong> {len(attachments)} invoice(s) in attached ZIP</p>
+<hr/>
+<p><em>This email was sent automatically via Odoo.</em></p>
+"""
+        else:
+            # Send individual files
+            final_attachments = attachments
+            body = f"""
 <p>Quarterly UBL export for <strong>{quarter} {year}</strong></p>
 <p><strong>Company:</strong> {company_name}</p>
 <p><strong>Documents:</strong> {len(attachments)} invoice(s)</p>
 <hr/>
 <p><em>This email was sent automatically via Odoo.</em></p>
 """
-        return self._send_mail(recipient, subject, body, attachments)
+        
+        return self._send_mail(recipient, subject, body, final_attachments)
 
     def send_statement_export(
         self,
