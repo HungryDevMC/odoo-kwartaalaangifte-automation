@@ -99,8 +99,11 @@ def lambda_handler(event: dict, context) -> dict:
 
         # Send email via Odoo's mail system (enabled by default if ubl_email is set)
         send_email = event.get("send_email", True)  # Default to True
-        if send_email and config.ubl_email:
-            _send_ubl_email(config, result, quarter, year, client)
+        if send_email:
+            if config.ubl_email:
+                _send_ubl_email(config, result, quarter, year, client)
+            if config.pdf_email:
+                _send_bank_statements_email(config, result, quarter, year, client)
 
         # Clean response - remove binary data that can't be serialized
         return _clean_response(result)
@@ -156,6 +159,8 @@ def _handle_auto_quarterly_export(config: ExportConfig) -> dict:
     # Send emails via Odoo's mail system
     if config.ubl_email:
         _send_ubl_email(config, result, quarter, str(year), client)
+    if config.pdf_email:
+        _send_bank_statements_email(config, result, quarter, str(year), client)
 
     return _clean_response(result)
 
@@ -342,6 +347,7 @@ def _run_export(
         result_data["download_url"] = presigned_url
         result_data["_zip_data"] = zip_data  # For email sending
         result_data["_ubl_files"] = ubl_files  # For email sending (individual XMLs)
+        result_data["_statement_files"] = statement_pdfs  # For bank statement email
 
         return {
             "statusCode": 200,
@@ -579,10 +585,12 @@ def _export_bank_statements(
             csv_content = _generate_bank_transactions_csv(statement_lines)
             if csv_content:
                 statement_pdfs.append(("Bank_Transactions.csv", csv_content))
-                logger.info("Generated bank transactions CSV")
+                logger.info(f"Generated bank transactions CSV with {len(statement_lines)} transactions")
+            # Return the CSV - no formal statements to process
+            return statement_pdfs
 
         if not statements:
-            return []
+            return statement_pdfs  # Return whatever we have (might be empty)
 
         # Try to render each statement as PDF
         for statement in statements:
@@ -715,6 +723,104 @@ def _send_ubl_email(
     except Exception as e:
         logger.exception(f"Failed to send email via Odoo: {e}")
         return False
+
+
+def _send_bank_statements_email(
+    config: ExportConfig,
+    result: dict,
+    quarter: str,
+    year: str,
+    odoo_client: OdooClient,
+) -> bool:
+    """Send bank statements/transactions via Odoo's email system.
+
+    Args:
+        config: Export configuration
+        result: Export result dict
+        quarter: Quarter string
+        year: Year string
+        odoo_client: Connected Odoo client for sending email
+
+    Returns:
+        True if sent successfully
+    """
+    if not config.pdf_email:
+        logger.warning("PDF email not configured, skipping bank statements email")
+        return False
+
+    try:
+        # Get statement files from result
+        statement_files = result.get("_statement_files") or result.get("_result_data", {}).get("_statement_files", [])
+        
+        if not statement_files:
+            logger.info("No bank statement files to send")
+            return False
+
+        # Convert to attachment format
+        attachments = []
+        for filename, data in statement_files:
+            mimetype = "text/csv" if filename.endswith(".csv") else "application/pdf"
+            attachments.append((filename, data, mimetype))
+
+        if not attachments:
+            logger.warning("No attachments for bank statements email")
+            return False
+
+        # Get company name from result
+        company_name = result.get("company") or result.get("_result_data", {}).get("company", "Unknown Company")
+
+        logger.info(f"Sending {len(attachments)} bank statement files to {config.pdf_email}")
+
+        # Send email via Odoo
+        sender = OdooEmailSender(odoo_client)
+        return sender.send_statement_export(
+            recipient=config.pdf_email,
+            company_name=company_name,
+            quarter=quarter or "Export",
+            year=year or str(date.today().year),
+            zip_data=attachments[0][1] if len(attachments) == 1 else None,
+            zip_filename=attachments[0][0] if len(attachments) == 1 else "BankStatements.zip",
+            statement_count=len(attachments),
+            bank_accounts=["Bank"],  # Could be enhanced to list actual accounts
+        ) if len(attachments) == 1 else _send_multiple_statement_files(
+            sender, config.pdf_email, company_name, quarter, year, attachments
+        )
+
+    except Exception as e:
+        logger.exception(f"Failed to send bank statements email via Odoo: {e}")
+        return False
+
+
+def _send_multiple_statement_files(
+    sender: OdooEmailSender,
+    recipient: str,
+    company_name: str,
+    quarter: str,
+    year: str,
+    attachments: list[tuple[str, bytes, str]],
+) -> bool:
+    """Send multiple statement files bundled in a ZIP."""
+    import io
+    import zipfile
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for filename, data, mimetype in attachments:
+            zf.writestr(filename, data)
+    
+    zip_buffer.seek(0)
+    zip_data = zip_buffer.getvalue()
+    
+    return sender.send_statement_export(
+        recipient=recipient,
+        company_name=company_name,
+        quarter=quarter,
+        year=year,
+        zip_data=zip_data,
+        zip_filename=f"BankStatements_{quarter}_{year}.zip",
+        statement_count=len(attachments),
+        bank_accounts=["Bank"],
+    )
 
 
 def _parse_date_range(event: dict) -> tuple[date | None, date | None, str | None, str | None]:
