@@ -29,3 +29,6 @@ send_day                  = 5
 bank_journal_ids          = "" # Comma-separated IDs
 enable_quarterly_schedule = true
 
+# === Output Settings ===
+ubl_file_extension = "ubl" # Use .ubl extension for Axito compatibility
+

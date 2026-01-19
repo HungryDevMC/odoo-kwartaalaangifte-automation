@@ -264,7 +264,7 @@ def _run_export(
                 invoice_copy, partner, lines, taxes, products
             )
 
-            filename = f"{ubl_number.replace('/', '-').replace(' ', '_')}.xml"
+            filename = f"{ubl_number.replace('/', '-').replace(' ', '_')}.{config.ubl_file_extension}"
             ubl_files.append((filename, xml_content))
             logger.info(f"Generated UBL for {ubl_number} (type: {move_type})")
 
@@ -786,17 +786,17 @@ def _send_ubl_email(
                 logger.error("No ZIP data available for email")
                 return False
 
-            # Extract individual XML files for BilltoBox
+            # Extract individual UBL files for BilltoBox
             attachments = []
             with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
                 for name in zf.namelist():
-                    if name.endswith(".xml"):
+                    if name.endswith((".xml", ".ubl")):
                         xml_data = zf.read(name)
                         filename = name.split("/")[-1]  # Remove UBL/ prefix
                         attachments.append((filename, xml_data, "application/xml"))
 
         if not attachments:
-            logger.warning("No XML files to send")
+            logger.warning("No UBL files to send")
             return False
 
         # Get company name from result

@@ -125,3 +125,16 @@ variable "include_bank_statements" {
   default     = true
 }
 
+# === Output Settings ===
+
+variable "ubl_file_extension" {
+  description = "File extension for UBL files: xml or ubl (use ubl for Axito compatibility)"
+  type        = string
+  default     = "xml"
+
+  validation {
+    condition     = contains(["xml", "ubl"], var.ubl_file_extension)
+    error_message = "UBL file extension must be 'xml' or 'ubl'."
+  }
+}
+

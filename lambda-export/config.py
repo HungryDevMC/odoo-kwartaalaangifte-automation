@@ -69,6 +69,9 @@ class ExportConfig:
     # === Output Settings ===
     # S3 bucket for storing exports
     s3_bucket: Optional[str] = None
+    # File extension for UBL files ("xml" or "ubl")
+    # Use "ubl" for Axito compatibility
+    ubl_file_extension: str = "xml"
 
     def get_move_types(self) -> list[str]:
         """Get list of move types based on direction and document_type filters.
@@ -170,6 +173,7 @@ class ExportConfig:
             include_bank_statements=os.environ.get("INCLUDE_BANK_STATEMENTS", "true").lower() == "true",
             send_ubl_as_zip=os.environ.get("SEND_UBL_AS_ZIP", "true").lower() == "true",
             s3_bucket=os.environ.get("S3_BUCKET"),
+            ubl_file_extension=os.environ.get("UBL_FILE_EXTENSION", "xml"),
         )
 
     @classmethod
@@ -205,6 +209,7 @@ class ExportConfig:
             include_bank_statements=event.get("include_bank_statements", base_config.include_bank_statements),
             send_ubl_as_zip=event.get("send_ubl_as_zip", base_config.send_ubl_as_zip),
             s3_bucket=event.get("s3_bucket", base_config.s3_bucket),
+            ubl_file_extension=event.get("ubl_file_extension", base_config.ubl_file_extension),
         )
 
 
