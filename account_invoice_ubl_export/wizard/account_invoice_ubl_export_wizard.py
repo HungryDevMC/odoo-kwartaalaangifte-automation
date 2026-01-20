@@ -390,12 +390,49 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         :param invoice: account.move record
         :return: bytes PDF content or None if generation failed
         """
+        # Try different report references for compatibility
+        report_refs = [
+            "account.account_invoices",
+            "account.report_invoice",
+            "account.report_invoice_with_payments",
+        ]
+
+        report = None
+        for ref in report_refs:
+            try:
+                report = self.env.ref(ref)
+                if report:
+                    _logger.debug("Found invoice report: %s", ref)
+                    break
+            except ValueError:
+                continue
+
+        if not report:
+            _logger.error("No invoice report found. Tried: %s", report_refs)
+            return None
+
         try:
-            report = self.env.ref("account.account_invoices")
-            pdf_content, _ = report._render_qweb_pdf(report, [invoice.id])
+            # Odoo 18 signature: _render_qweb_pdf(res_ids, data=None)
+            pdf_content, _ = report._render_qweb_pdf(res_ids=[invoice.id])
+            _logger.info(
+                "Generated PDF for %s: %d bytes",
+                invoice.name, len(pdf_content) if pdf_content else 0
+            )
             return pdf_content
+        except TypeError:
+            # Fallback for different Odoo versions
+            try:
+                pdf_content, _ = report._render_qweb_pdf([invoice.id])
+                _logger.info(
+                    "Generated PDF (fallback) for %s: %d bytes",
+                    invoice.name, len(pdf_content) if pdf_content else 0
+                )
+                return pdf_content
+            except Exception as e:
+                _logger.error("PDF generation fallback failed for %s: %s", invoice.name, str(e))
+                return None
         except Exception as e:
-            _logger.warning("PDF generation failed for %s: %s", invoice.name, str(e))
+            _logger.error("PDF generation failed for %s: %s", invoice.name, str(e))
             return None
 
     def _embed_pdf_in_ubl(self, xml_content, pdf_content, invoice):
@@ -410,6 +447,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         :return: bytes modified XML content
         """
         if not pdf_content:
+            _logger.warning("No PDF content to embed for %s", invoice.name)
             return xml_content
 
         try:
@@ -481,15 +519,20 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
                 root.append(add_doc_ref)
 
             # Return modified XML
-            return etree.tostring(
+            result = etree.tostring(
                 root,
                 pretty_print=True,
                 xml_declaration=True,
                 encoding='UTF-8'
             )
+            _logger.info(
+                "Embedded PDF in UBL for %s: XML grew from %d to %d bytes",
+                invoice.name, len(xml_content), len(result)
+            )
+            return result
 
         except Exception as e:
-            _logger.warning(
+            _logger.error(
                 "Failed to embed PDF in UBL for %s: %s", invoice.name, str(e)
             )
             # Return original XML if embedding fails
@@ -509,23 +552,28 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         xml_content, errors = builder._export_invoice(invoice)
 
         if errors:
+            _logger.warning("UBL Export warnings for %s: %s", invoice.name, errors)
             invoice.message_post(
                 body=_("UBL Export warnings: %s") % ", ".join(errors),
                 message_type="notification",
             )
 
         if not xml_content:
+            _logger.error("UBL generation returned no content for %s", invoice.name)
             return None
+
+        _logger.debug("Generated UBL XML for %s: %d bytes", invoice.name, len(xml_content))
 
         # Embed PDF if requested
         if embed_pdf:
+            _logger.info("Embedding PDF in UBL for %s (embed_pdf=%s)", invoice.name, embed_pdf)
             pdf_content = self._generate_invoice_pdf(invoice)
             if pdf_content:
                 xml_content = self._embed_pdf_in_ubl(xml_content, pdf_content, invoice)
-                _logger.debug(
-                    "Embedded PDF (%d bytes) in UBL for %s",
-                    len(pdf_content), invoice.name
-                )
+            else:
+                _logger.warning("No PDF generated for %s, skipping embed", invoice.name)
+        else:
+            _logger.debug("PDF embedding disabled for %s", invoice.name)
 
         return xml_content
 
@@ -536,7 +584,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         :return: bytes PDF content
         """
         report = self.env.ref("account.action_report_account_statement")
-        pdf_content, _ = report._render_qweb_pdf(report, [statement.id])
+        pdf_content, _ = report._render_qweb_pdf(res_ids=[statement.id])
         return pdf_content
 
     def action_preview(self):
@@ -569,6 +617,11 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         if not invoices and not statements:
             raise UserError(_("No documents found for the selected criteria."))
 
+        _logger.info(
+            "Starting export: %d invoices, embed_pdf=%s",
+            len(invoices), self.embed_pdf
+        )
+
         # Create ZIP file in memory
         zip_buffer = io.BytesIO()
 
@@ -580,8 +633,9 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
                     if xml_content:
                         filename = "UBL/%s.xml" % invoice.name.replace("/", "-")
                         zip_file.writestr(filename, xml_content)
+                        _logger.debug("Added %s to ZIP: %d bytes", filename, len(xml_content))
                 except Exception as e:
-                    _logger.warning(
+                    _logger.exception(
                         "UBL Export failed for %s: %s", invoice.name, str(e)
                     )
                     invoice.message_post(
@@ -613,8 +667,11 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
 
         # Save to wizard
         zip_buffer.seek(0)
+        zip_data = zip_buffer.getvalue()
+        _logger.info("Export complete: %s (%d bytes)", zip_filename, len(zip_data))
+
         self.write({
-            "export_file": base64.b64encode(zip_buffer.getvalue()),
+            "export_file": base64.b64encode(zip_data),
             "export_filename": zip_filename,
             "state": "done",
         })
@@ -758,6 +815,11 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             "account_invoice_ubl_export.embed_pdf", "True"
         ) == "True"
 
+        _logger.info(
+            "Quarterly export settings: embed_pdf=%s, state_filter=%s",
+            embed_pdf, state_filter
+        )
+
         # Process each company
         for company in self.env["res.company"].search([]):
             self._send_quarterly_export_for_company(
@@ -890,6 +952,11 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             _logger.info("No invoices for %s %s %s", company.name, quarter, year)
             return
 
+        _logger.info(
+            "Generating UBL for %d invoices, embed_pdf=%s",
+            len(invoices), embed_pdf
+        )
+
         # Generate individual UBL XML files
         attachments = []
         for invoice in invoices:
@@ -898,8 +965,11 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
                 if xml_content:
                     filename = "%s.xml" % invoice.name.replace("/", "-")
                     attachments.append((filename, xml_content, "application/xml"))
+                    _logger.debug(
+                        "Generated %s: %d bytes", filename, len(xml_content)
+                    )
             except Exception as e:
-                _logger.warning(
+                _logger.exception(
                     "UBL export failed for %s: %s", invoice.name, str(e)
                 )
 
