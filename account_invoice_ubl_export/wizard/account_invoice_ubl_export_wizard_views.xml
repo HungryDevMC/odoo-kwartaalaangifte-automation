@@ -69,6 +69,18 @@
                         </group>
                     </group>
 
+                    <!-- Export Options -->
+                    <group string="Export Options">
+                        <group>
+                            <field name="embed_pdf"/>
+                        </group>
+                        <group>
+                            <div class="text-muted" invisible="not embed_pdf">
+                                <small>PDF will be embedded in each UBL XML file for accounting software compatibility (BilltoBox, ClearFacts, etc.)</small>
+                            </div>
+                        </group>
+                    </group>
+
                     <!-- Statistics -->
                     <group string="Summary" invisible="invoice_count == 0 and statement_count == 0">
                         <group>
