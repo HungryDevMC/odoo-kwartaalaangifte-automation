@@ -8,10 +8,18 @@ import logging
 import zipfile
 from datetime import date, timedelta
 
+from lxml import etree
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
+
+# UBL namespaces
+UBL_NAMESPACES = {
+    'cbc': 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2',
+    'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
+}
 
 
 class AccountInvoiceUblExportWizard(models.TransientModel):
@@ -135,6 +143,14 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         string="Bank Accounts",
         domain="[('type', 'in', ('bank', 'cash'))]",
         help="Select bank accounts to export statements for",
+    )
+
+    # PDF embedding option
+    embed_pdf = fields.Boolean(
+        string="Embed PDF in UBL",
+        default=True,
+        help="Embed a PDF representation of the invoice in the UBL XML file. "
+             "Required by most Belgian accounting software (BilltoBox, ClearFacts, etc.)",
     )
 
     # Output
@@ -368,12 +384,125 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
 
         return self.env["account.bank.statement"].search(domain, order="date, name")
 
-    def _generate_ubl_xml(self, invoice):
-        """Generate UBL BIS 3.0 XML for a single invoice.
-
-        Uses Odoo's built-in UBL BIS3 generator from account_edi_ubl_cii.
+    def _generate_invoice_pdf(self, invoice):
+        """Generate PDF for an invoice using Odoo's report engine.
 
         :param invoice: account.move record
+        :return: bytes PDF content or None if generation failed
+        """
+        try:
+            report = self.env.ref("account.account_invoices")
+            pdf_content, _ = report._render_qweb_pdf(report, [invoice.id])
+            return pdf_content
+        except Exception as e:
+            _logger.warning("PDF generation failed for %s: %s", invoice.name, str(e))
+            return None
+
+    def _embed_pdf_in_ubl(self, xml_content, pdf_content, invoice):
+        """Embed PDF as AdditionalDocumentReference in UBL XML.
+
+        Adds the PDF as a base64-encoded EmbeddedDocumentBinaryObject
+        per Peppol BIS 3.0 specification.
+
+        :param xml_content: bytes UBL XML content
+        :param pdf_content: bytes PDF content
+        :param invoice: account.move record for filename
+        :return: bytes modified XML content
+        """
+        if not pdf_content:
+            return xml_content
+
+        try:
+            # Parse the XML
+            root = etree.fromstring(xml_content)
+
+            # Get the namespace from the root element
+            nsmap = root.nsmap.copy()
+            # Handle default namespace
+            if None in nsmap:
+                nsmap['inv'] = nsmap.pop(None)
+
+            # Create namespace-aware element names
+            cac_ns = UBL_NAMESPACES['cac']
+            cbc_ns = UBL_NAMESPACES['cbc']
+
+            # Create AdditionalDocumentReference element
+            add_doc_ref = etree.Element(
+                "{%s}AdditionalDocumentReference" % cac_ns,
+                nsmap={'cac': cac_ns, 'cbc': cbc_ns}
+            )
+
+            # Add ID element
+            doc_id = etree.SubElement(add_doc_ref, "{%s}ID" % cbc_ns)
+            doc_id.text = invoice.name
+
+            # Add DocumentDescription
+            doc_desc = etree.SubElement(add_doc_ref, "{%s}DocumentDescription" % cbc_ns)
+            doc_desc.text = "Invoice PDF"
+
+            # Add Attachment element
+            attachment = etree.SubElement(add_doc_ref, "{%s}Attachment" % cac_ns)
+
+            # Add EmbeddedDocumentBinaryObject
+            pdf_filename = "%s.pdf" % invoice.name.replace("/", "-")
+            embedded_doc = etree.SubElement(
+                attachment,
+                "{%s}EmbeddedDocumentBinaryObject" % cbc_ns,
+                mimeCode="application/pdf",
+                filename=pdf_filename
+            )
+            embedded_doc.text = base64.b64encode(pdf_content).decode('ascii')
+
+            # Find insertion point - after AccountingSupplierParty or before PaymentMeans
+            # Per UBL 2.1 schema, AdditionalDocumentReference comes after ContractDocumentReference
+            # and before Signature. We'll insert it after any existing DocumentReference elements
+            # or after AccountingCustomerParty if none exist.
+
+            insert_after_tags = [
+                "{%s}ContractDocumentReference" % cac_ns,
+                "{%s}OriginatorDocumentReference" % cac_ns,
+                "{%s}AdditionalDocumentReference" % cac_ns,
+                "{%s}ProjectReference" % cac_ns,
+                "{%s}AccountingCustomerParty" % cac_ns,
+                "{%s}AccountingSupplierParty" % cac_ns,
+            ]
+
+            insert_position = None
+            for tag in insert_after_tags:
+                elements = root.findall(tag)
+                if elements:
+                    insert_position = list(root).index(elements[-1]) + 1
+                    break
+
+            if insert_position is not None:
+                root.insert(insert_position, add_doc_ref)
+            else:
+                # Fallback: append to end (not ideal but safe)
+                root.append(add_doc_ref)
+
+            # Return modified XML
+            return etree.tostring(
+                root,
+                pretty_print=True,
+                xml_declaration=True,
+                encoding='UTF-8'
+            )
+
+        except Exception as e:
+            _logger.warning(
+                "Failed to embed PDF in UBL for %s: %s", invoice.name, str(e)
+            )
+            # Return original XML if embedding fails
+            return xml_content
+
+    def _generate_ubl_xml(self, invoice, embed_pdf=True):
+        """Generate UBL BIS 3.0 XML for a single invoice.
+
+        Uses Odoo's built-in UBL BIS3 generator from account_edi_ubl_cii,
+        then optionally embeds the invoice PDF.
+
+        :param invoice: account.move record
+        :param embed_pdf: Whether to embed PDF in the XML (default True)
         :return: bytes XML content or None if generation failed
         """
         builder = self.env["account.edi.xml.ubl_bis3"]
@@ -384,6 +513,19 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
                 body=_("UBL Export warnings: %s") % ", ".join(errors),
                 message_type="notification",
             )
+
+        if not xml_content:
+            return None
+
+        # Embed PDF if requested
+        if embed_pdf:
+            pdf_content = self._generate_invoice_pdf(invoice)
+            if pdf_content:
+                xml_content = self._embed_pdf_in_ubl(xml_content, pdf_content, invoice)
+                _logger.debug(
+                    "Embedded PDF (%d bytes) in UBL for %s",
+                    len(pdf_content), invoice.name
+                )
 
         return xml_content
 
@@ -434,7 +576,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             # Export UBL files
             for invoice in invoices:
                 try:
-                    xml_content = self._generate_ubl_xml(invoice)
+                    xml_content = self._generate_ubl_xml(invoice, embed_pdf=self.embed_pdf)
                     if xml_content:
                         filename = "UBL/%s.xml" % invoice.name.replace("/", "-")
                         zip_file.writestr(filename, xml_content)
@@ -611,11 +753,16 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             "account_invoice_ubl_export.custom_domain", ""
         )
 
+        # Get PDF embedding setting (default True for compatibility)
+        embed_pdf = ICP.get_param(
+            "account_invoice_ubl_export.embed_pdf", "True"
+        ) == "True"
+
         # Process each company
         for company in self.env["res.company"].search([]):
             self._send_quarterly_export_for_company(
                 company, quarter, year, ubl_email, pdf_email, journal_ids,
-                state_filter, custom_domain
+                state_filter, custom_domain, embed_pdf
             )
 
     @api.model
@@ -667,7 +814,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
 
     def _send_quarterly_export_for_company(
         self, company, quarter, year, ubl_email, pdf_email, journal_ids,
-        state_filter="posted", custom_domain=""
+        state_filter="posted", custom_domain="", embed_pdf=True
     ):
         """Send quarterly export for a specific company.
 
@@ -679,6 +826,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         :param journal_ids: List of journal IDs for bank statements
         :param state_filter: State filter setting (posted, posted_draft, etc.)
         :param custom_domain: Custom domain string for additional filtering
+        :param embed_pdf: Whether to embed PDF in UBL files
         """
         self = self.with_company(company)
         start_date, end_date = self._get_quarter_dates(quarter, year)
@@ -690,7 +838,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         if ubl_email:
             self._send_ubl_quarterly_email(
                 company, quarter, year, start_date, end_date, ubl_email,
-                state_filter, custom_domain
+                state_filter, custom_domain, embed_pdf
             )
 
         # Send bank statements to accountant
@@ -705,7 +853,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
 
     def _send_ubl_quarterly_email(
         self, company, quarter, year, start_date, end_date, email_to,
-        state_filter="posted", custom_domain=""
+        state_filter="posted", custom_domain="", embed_pdf=True
     ):
         """Generate and send UBL export email.
 
@@ -717,6 +865,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         :param email_to: Recipient email address
         :param state_filter: State filter setting
         :param custom_domain: Custom domain string for additional filtering
+        :param embed_pdf: Whether to embed PDF in UBL files
         """
         # Build state domain based on filter
         state_domain = self._get_state_domain(state_filter)
@@ -745,7 +894,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
         attachments = []
         for invoice in invoices:
             try:
-                xml_content = self._generate_ubl_xml(invoice)
+                xml_content = self._generate_ubl_xml(invoice, embed_pdf=embed_pdf)
                 if xml_content:
                     filename = "%s.xml" % invoice.name.replace("/", "-")
                     attachments.append((filename, xml_content, "application/xml"))
@@ -764,6 +913,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             "<p>Company: %(company)s</p>"
             "<p>Period: %(start)s to %(end)s</p>"
             "<p>Documents: %(count)s</p>"
+            "<p>PDF embedded: %(embed)s</p>"
         ) % {
             "quarter": quarter,
             "year": year,
@@ -771,6 +921,7 @@ class AccountInvoiceUblExportWizard(models.TransientModel):
             "start": start_date,
             "end": end_date,
             "count": len(attachments),
+            "embed": _("Yes") if embed_pdf else _("No"),
         }
 
         self._send_email_with_attachments(email_to, subject, body, attachments)
