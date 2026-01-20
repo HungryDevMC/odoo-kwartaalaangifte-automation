@@ -6,6 +6,9 @@ import logging
 import xmlrpc.client
 from datetime import date, timedelta
 from typing import Any
+from urllib.parse import urljoin
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,8 @@ class OdooClient:
         self.api_key = api_key
         self._uid = None
         self._models = None
+        self._http_session = None
+        self._http_authenticated = False
 
     def _get_common(self) -> xmlrpc.client.ServerProxy:
         """Get common endpoint for authentication."""
@@ -403,8 +408,55 @@ class OdooClient:
 
         return self.search_read("account.journal", domain, fields=fields)
 
+    def _ensure_http_session(self) -> bool:
+        """Ensure we have an authenticated HTTP session.
+
+        Returns:
+            True if session is authenticated
+        """
+        if self._http_authenticated and self._http_session:
+            return True
+
+        self._http_session = requests.Session()
+
+        # Authenticate via web login
+        login_url = f"{self.url}/web/session/authenticate"
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "call",
+            "params": {
+                "db": self.database,
+                "login": self.username,
+                "password": self.api_key,
+            },
+            "id": 1,
+        }
+
+        try:
+            response = self._http_session.post(
+                login_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("result") and result["result"].get("uid"):
+                self._http_authenticated = True
+                logger.info("HTTP session authenticated as user %d", result["result"]["uid"])
+                return True
+            else:
+                error = result.get("error", {}).get("message", "Unknown error")
+                logger.warning("HTTP authentication failed: %s", error)
+                return False
+
+        except Exception as e:
+            logger.warning("HTTP session authentication failed: %s", e)
+            return False
+
     def get_invoice_pdf(self, invoice_id: int) -> bytes | None:
-        """Fetch invoice PDF from Odoo.
+        """Fetch invoice PDF from Odoo via HTTP.
 
         Args:
             invoice_id: Invoice record ID
@@ -416,11 +468,10 @@ class OdooClient:
         report_names = [
             "account.report_invoice_with_payments",
             "account.report_invoice",
-            "account.account_invoices",
         ]
 
         for report_name in report_names:
-            pdf_data = self.render_report_pdf(report_name, [invoice_id])
+            pdf_data = self._fetch_report_pdf_http(report_name, [invoice_id])
             if pdf_data:
                 logger.info(
                     "Generated invoice PDF using %s: %d bytes",
@@ -428,7 +479,78 @@ class OdooClient:
                 )
                 return pdf_data
 
+        # Fallback: check for existing PDF attachment on the invoice
+        pdf_data = self._get_invoice_attachment(invoice_id)
+        if pdf_data:
+            logger.info("Found existing PDF attachment for invoice %d: %d bytes", invoice_id, len(pdf_data))
+            return pdf_data
+
         logger.warning("Could not render invoice PDF for ID %d", invoice_id)
+        return None
+
+    def _fetch_report_pdf_http(
+        self, report_name: str, record_ids: list[int]
+    ) -> bytes | None:
+        """Fetch a report PDF via HTTP.
+
+        Args:
+            report_name: Report technical name
+            record_ids: List of record IDs
+
+        Returns:
+            PDF content as bytes, or None if failed
+        """
+        if not self._ensure_http_session():
+            return None
+
+        ids_str = ",".join(str(i) for i in record_ids)
+        report_url = f"{self.url}/report/pdf/{report_name}/{ids_str}"
+
+        try:
+            response = self._http_session.get(report_url, timeout=60)
+
+            if response.status_code == 200:
+                content_type = response.headers.get("Content-Type", "")
+                if "pdf" in content_type.lower() or response.content[:4] == b"%PDF":
+                    return response.content
+
+            logger.debug(
+                "Report %s returned status %d for IDs %s",
+                report_name, response.status_code, ids_str
+            )
+            return None
+
+        except Exception as e:
+            logger.debug("HTTP report fetch failed for %s: %s", report_name, e)
+            return None
+
+    def _get_invoice_attachment(self, invoice_id: int) -> bytes | None:
+        """Get existing PDF attachment from invoice.
+
+        Args:
+            invoice_id: Invoice record ID
+
+        Returns:
+            PDF content as bytes, or None if not found
+        """
+        try:
+            attachments = self.search_read(
+                "ir.attachment",
+                [
+                    ("res_model", "=", "account.move"),
+                    ("res_id", "=", invoice_id),
+                    ("mimetype", "=", "application/pdf"),
+                ],
+                fields=["id", "name", "datas"],
+                limit=1,
+            )
+
+            if attachments and attachments[0].get("datas"):
+                return base64.b64decode(attachments[0]["datas"])
+
+        except Exception as e:
+            logger.debug("Failed to fetch attachment for invoice %d: %s", invoice_id, e)
+
         return None
 
     def render_report_pdf(
@@ -443,57 +565,7 @@ class OdooClient:
         Returns:
             PDF content as bytes, or None if rendering failed
         """
-        try:
-            # Try using report service
-            # Method 1: ir.actions.report render_qweb_pdf
-            result = self.execute(
-                "ir.actions.report",
-                "_render_qweb_pdf",
-                report_name,
-                record_ids,
-            )
-
-            if result and isinstance(result, (list, tuple)) and len(result) >= 1:
-                pdf_data = result[0]
-                if isinstance(pdf_data, bytes):
-                    return pdf_data
-                elif isinstance(pdf_data, str):
-                    # Base64 encoded
-                    return base64.b64decode(pdf_data)
-
-            return None
-
-        except Exception as e:
-            logger.debug("Method 1 failed for %s: %s", report_name, e)
-            # Method 2: Try alternative approach via report action
-            try:
-                # Find the report action
-                report_action = self.search_read(
-                    "ir.actions.report",
-                    [("report_name", "=", report_name)],
-                    ["id"],
-                    limit=1,
-                )
-
-                if report_action:
-                    result = self.execute(
-                        "ir.actions.report",
-                        "_render_qweb_pdf",
-                        [report_action[0]["id"]],
-                        record_ids,
-                    )
-
-                    if result and isinstance(result, (list, tuple)) and len(result) >= 1:
-                        pdf_data = result[0]
-                        if isinstance(pdf_data, bytes):
-                            return pdf_data
-                        elif isinstance(pdf_data, str):
-                            return base64.b64decode(pdf_data)
-
-            except Exception as e2:
-                logger.debug("Method 2 failed for %s: %s", report_name, e2)
-
-            return None
+        return self._fetch_report_pdf_http(report_name, record_ids)
 
 
 def get_quarter_dates(quarter: str, year: int) -> tuple[date, date]:

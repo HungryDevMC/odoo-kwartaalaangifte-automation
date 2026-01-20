@@ -6,6 +6,9 @@
 # Optional: boto3 is included in Lambda runtime by default
 # boto3  # Only needed if you want to use S3
 
+# HTTP requests for Odoo report PDF fetching
+requests>=2.28.0
+
 # PDF generation for bank transaction reports
 reportlab>=4.0.0
 
