@@ -239,6 +239,28 @@ class UBLGenerator:
         }
         return scheme_map.get(country_code, "9925")
 
+    def _normalize_vat(self, vat: str, country_code: str) -> str:
+        """Ensure VAT number has country prefix (BR-CO-09 compliance).
+
+        Args:
+            vat: VAT number (may or may not have prefix)
+            country_code: ISO 3166-1 alpha-2 country code
+
+        Returns:
+            VAT number with country prefix
+        """
+        if not vat:
+            return ""
+
+        vat = vat.strip().upper().replace(" ", "").replace(".", "")
+
+        # Check if VAT already has a 2-letter country prefix
+        if len(vat) >= 2 and vat[:2].isalpha():
+            return vat
+
+        # Add country prefix
+        return f"{country_code}{vat}"
+
     def _get_tax_category(self, rate: float) -> str:
         """Get Peppol tax category code based on rate.
 
@@ -272,7 +294,7 @@ class UBLGenerator:
         party = self._add_cac(supplier, "Party")
 
         country_code = self._get_country_code(self.company)
-        vat = self.company.get("vat", "")
+        vat = self._normalize_vat(self.company.get("vat", ""), country_code)
 
         # Endpoint ID (VAT number with correct scheme)
         if vat:
@@ -319,7 +341,7 @@ class UBLGenerator:
         party = self._add_cac(customer, "Party")
 
         country_code = self._get_country_code(partner)
-        vat = partner.get("vat", "")
+        vat = self._normalize_vat(partner.get("vat", ""), country_code)
 
         # Endpoint ID
         if vat:
