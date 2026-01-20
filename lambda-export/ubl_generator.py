@@ -296,19 +296,28 @@ class UBLGenerator:
         country_code = self._get_country_code(self.company)
         vat = self._normalize_vat(self.company.get("vat", ""), country_code)
 
-        # Endpoint ID (VAT number with correct scheme)
+        # Seller name - required, use fallback if empty
+        seller_name = self.company.get("name", "").strip()
+        if not seller_name:
+            seller_name = "Unknown Seller"
+
+        # Endpoint ID - required for Peppol
         if vat:
             endpoint = self._add_cbc(party, "EndpointID", vat)
             endpoint.set("schemeID", self._get_vat_scheme_id(vat, country_code))
+        else:
+            # Fallback to company name as identifier
+            endpoint = self._add_cbc(party, "EndpointID", seller_name.replace(" ", "").upper()[:35])
+            endpoint.set("schemeID", "0190")
 
         # Party identification
         if vat:
             party_id = self._add_cac(party, "PartyIdentification")
             self._add_cbc(party_id, "ID", vat)
 
-        # Party name
+        # Party name - must not be empty
         party_name = self._add_cac(party, "PartyName")
-        self._add_cbc(party_name, "Name", self.company.get("name", ""))
+        self._add_cbc(party_name, "Name", seller_name)
 
         # Postal address
         address = self._add_cac(party, "PostalAddress")
@@ -329,9 +338,9 @@ class UBLGenerator:
             scheme = self._add_cac(tax_scheme, "TaxScheme")
             self._add_cbc(scheme, "ID", "VAT")
 
-        # Legal entity
+        # Legal entity - RegistrationName must not be empty
         legal = self._add_cac(party, "PartyLegalEntity")
-        self._add_cbc(legal, "RegistrationName", self.company.get("name", ""))
+        self._add_cbc(legal, "RegistrationName", seller_name)
         if self.company.get("company_registry"):
             self._add_cbc(legal, "CompanyID", self.company["company_registry"])
 
@@ -342,20 +351,34 @@ class UBLGenerator:
 
         country_code = self._get_country_code(partner)
         vat = self._normalize_vat(partner.get("vat", ""), country_code)
+        email = partner.get("email", "")
 
-        # Endpoint ID
+        # Buyer name - required (BR-07), use fallback if empty
+        buyer_name = partner.get("name", "").strip()
+        if not buyer_name:
+            buyer_name = "Unknown Customer"
+
+        # Endpoint ID - required for Peppol
+        # Use VAT if available, otherwise use email with scheme 0195
         if vat:
             endpoint = self._add_cbc(party, "EndpointID", vat)
             endpoint.set("schemeID", self._get_vat_scheme_id(vat, country_code))
+        elif email:
+            endpoint = self._add_cbc(party, "EndpointID", email)
+            endpoint.set("schemeID", "0195")  # Email scheme
+        else:
+            # Last resort - use name-based identifier
+            endpoint = self._add_cbc(party, "EndpointID", buyer_name.replace(" ", "").upper()[:35])
+            endpoint.set("schemeID", "0190")  # Unregistered
 
         # Party identification
         if vat:
             party_id = self._add_cac(party, "PartyIdentification")
             self._add_cbc(party_id, "ID", vat)
 
-        # Party name
+        # Party name - must not be empty
         party_name = self._add_cac(party, "PartyName")
-        self._add_cbc(party_name, "Name", partner.get("name", ""))
+        self._add_cbc(party_name, "Name", buyer_name)
 
         # Postal address
         address = self._add_cac(party, "PostalAddress")
@@ -376,9 +399,9 @@ class UBLGenerator:
             scheme = self._add_cac(tax_scheme, "TaxScheme")
             self._add_cbc(scheme, "ID", "VAT")
 
-        # Legal entity
+        # Legal entity - RegistrationName must not be empty
         legal = self._add_cac(party, "PartyLegalEntity")
-        self._add_cbc(legal, "RegistrationName", partner.get("name", ""))
+        self._add_cbc(legal, "RegistrationName", buyer_name)
 
     def _add_payment_means(self, root: ET.Element, invoice: dict) -> None:
         """Add PaymentMeans element."""
