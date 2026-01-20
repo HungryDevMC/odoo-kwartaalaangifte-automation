@@ -222,6 +222,9 @@ def _run_export(
     generator = UBLGenerator(company)
     ubl_files = []  # List of (filename, xml_bytes)
 
+    if config.embed_pdf:
+        logger.info("PDF embedding enabled - will fetch invoice PDFs from Odoo")
+
     for invoice in invoices:
         try:
             # Determine invoice number for UBL and filename
@@ -230,7 +233,7 @@ def _run_export(
             move_type = invoice.get("move_type", "")
             invoice_name = invoice.get("name")
             vendor_ref = invoice.get("ref")
-            
+
             if move_type in ("in_invoice", "in_refund"):
                 # Vendor bill - use vendor's invoice reference
                 if vendor_ref and vendor_ref is not False:
@@ -260,13 +263,22 @@ def _run_export(
             invoice_copy = dict(invoice)
             invoice_copy["_ubl_number"] = ubl_number
 
+            # Fetch invoice PDF if embedding is enabled
+            pdf_content = None
+            if config.embed_pdf:
+                pdf_content = client.get_invoice_pdf(invoice["id"])
+                if pdf_content:
+                    logger.info(f"Fetched PDF for {ubl_number}: {len(pdf_content)} bytes")
+                else:
+                    logger.warning(f"Could not fetch PDF for {ubl_number}")
+
             xml_content = generator.generate_invoice(
-                invoice_copy, partner, lines, taxes, products
+                invoice_copy, partner, lines, taxes, products, pdf_content=pdf_content
             )
 
             filename = f"{ubl_number.replace('/', '-').replace(' ', '_')}.{config.ubl_file_extension}"
             ubl_files.append((filename, xml_content))
-            logger.info(f"Generated UBL for {ubl_number} (type: {move_type})")
+            logger.info(f"Generated UBL for {ubl_number} (type: {move_type}, pdf_embedded={pdf_content is not None})")
 
         except Exception as e:
             logger.error(f"Failed to generate UBL for invoice {invoice.get('id')}: {e}")
