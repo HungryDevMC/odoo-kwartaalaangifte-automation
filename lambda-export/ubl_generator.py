@@ -361,10 +361,24 @@ class UBLGenerator:
     def _add_payment_means(self, root: ET.Element, invoice: dict) -> None:
         """Add PaymentMeans element."""
         payment = self._add_cac(root, "PaymentMeans")
-        self._add_cbc(payment, "PaymentMeansCode", "30")  # Credit transfer
+
+        # Get company bank account (IBAN)
+        iban = self.company.get("bank_account", "")
+
+        if iban:
+            # Credit transfer with bank account (BR-61 compliant)
+            self._add_cbc(payment, "PaymentMeansCode", "30")
+        else:
+            # No bank account - use "not defined" code which doesn't require IBAN
+            self._add_cbc(payment, "PaymentMeansCode", "1")
 
         if invoice.get("payment_reference"):
             self._add_cbc(payment, "PaymentID", invoice["payment_reference"])
+
+        # PayeeFinancialAccount required for credit transfer (code 30)
+        if iban:
+            financial_account = self._add_cac(payment, "PayeeFinancialAccount")
+            self._add_cbc(financial_account, "ID", iban)
 
     def _add_tax_total(
         self,

@@ -142,7 +142,7 @@ class OdooClient:
         return self.execute(model, "read", ids, **kwargs)
 
     def get_company(self) -> dict:
-        """Get the current user's company."""
+        """Get the current user's company with bank account info."""
         user = self.search_read(
             "res.users",
             [("id", "=", self.uid)],
@@ -152,7 +152,22 @@ class OdooClient:
         if user and user[0].get("company_id"):
             company_id = user[0]["company_id"][0]
             companies = self.read("res.company", [company_id])
-            return companies[0] if companies else {}
+            if companies:
+                company = companies[0]
+                # Fetch primary bank account
+                partner_id = company.get("partner_id")
+                if isinstance(partner_id, (list, tuple)):
+                    partner_id = partner_id[0]
+                if partner_id:
+                    bank_accounts = self.search_read(
+                        "res.partner.bank",
+                        [("partner_id", "=", partner_id)],
+                        ["acc_number", "bank_id"],
+                        limit=1,
+                    )
+                    if bank_accounts:
+                        company["bank_account"] = bank_accounts[0].get("acc_number", "")
+                return company
         return {}
 
     def get_invoices(
