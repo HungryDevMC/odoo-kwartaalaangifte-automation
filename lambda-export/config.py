@@ -66,6 +66,10 @@ class ExportConfig:
     # Send UBL files as ZIP attachment (vs individual XML files)
     send_ubl_as_zip: bool = True
 
+    # === PDF Embedding ===
+    # Embed invoice PDF in UBL XML (required by Belgian accounting software)
+    embed_pdf: bool = True
+
     # === Output Settings ===
     # S3 bucket for storing exports
     s3_bucket: Optional[str] = None
@@ -172,6 +176,7 @@ class ExportConfig:
             bank_journal_ids=bank_journal_ids,
             include_bank_statements=os.environ.get("INCLUDE_BANK_STATEMENTS", "true").lower() == "true",
             send_ubl_as_zip=os.environ.get("SEND_UBL_AS_ZIP", "true").lower() == "true",
+            embed_pdf=os.environ.get("EMBED_PDF", "true").lower() == "true",
             s3_bucket=os.environ.get("S3_BUCKET"),
             ubl_file_extension=os.environ.get("UBL_FILE_EXTENSION", "xml"),
         )
@@ -208,6 +213,7 @@ class ExportConfig:
             bank_journal_ids=event.get("bank_journal_ids", base_config.bank_journal_ids),
             include_bank_statements=event.get("include_bank_statements", base_config.include_bank_statements),
             send_ubl_as_zip=event.get("send_ubl_as_zip", base_config.send_ubl_as_zip),
+            embed_pdf=event.get("embed_pdf", base_config.embed_pdf),
             s3_bucket=event.get("s3_bucket", base_config.s3_bucket),
             ubl_file_extension=event.get("ubl_file_extension", base_config.ubl_file_extension),
         )
@@ -235,4 +241,3 @@ STATE_FILTER_OPTIONS = {
     "posted_draft": "Posted + All Drafts",
     "all": "All States",
 }
-

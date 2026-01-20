@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Peppol BIS Billing 3.0 UBL XML generator."""
 
+import base64
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -59,6 +60,7 @@ class UBLGenerator:
         lines: list[dict],
         taxes: dict[int, dict],
         products: dict[int, dict],
+        pdf_content: bytes | None = None,
     ) -> bytes:
         """Generate UBL XML for an invoice.
 
@@ -68,6 +70,7 @@ class UBLGenerator:
             lines: List of invoice line dictionaries
             taxes: Dict mapping tax ID to tax info
             products: Dict mapping product ID to product info
+            pdf_content: Optional PDF bytes to embed in the UBL
 
         Returns:
             UTF-8 encoded XML bytes
@@ -157,6 +160,10 @@ class UBLGenerator:
         elif invoice.get("ref"):
             self._add_element(root, "cbc:BuyerReference", invoice["ref"])
 
+        # Embed PDF as AdditionalDocumentReference (if provided)
+        if pdf_content:
+            self._add_pdf_attachment(root, invoice_number, pdf_content, ns)
+
         # Supplier (AccountingSupplierParty)
         self._add_supplier_party(root, ns)
 
@@ -193,6 +200,39 @@ class UBLGenerator:
         if text is not None:
             elem.text = str(text)
         return elem
+
+    def _add_pdf_attachment(
+        self, root: ET.Element, invoice_number: str, pdf_content: bytes, ns: dict
+    ) -> None:
+        """Add PDF as AdditionalDocumentReference per Peppol BIS 3.0.
+
+        Args:
+            root: Root XML element
+            invoice_number: Invoice number for the document ID
+            pdf_content: PDF file content as bytes
+            ns: Namespace dict
+        """
+        cac = ns["cac"]
+        cbc = ns["cbc"]
+
+        # Create AdditionalDocumentReference
+        add_doc_ref = ET.SubElement(root, f"{{{cac}}}AdditionalDocumentReference")
+
+        # Document ID
+        self._add_element(add_doc_ref, f"{{{cbc}}}ID", invoice_number)
+
+        # Document description
+        self._add_element(add_doc_ref, f"{{{cbc}}}DocumentDescription", "Invoice PDF")
+
+        # Attachment with embedded binary object
+        attachment = ET.SubElement(add_doc_ref, f"{{{cac}}}Attachment")
+
+        # EmbeddedDocumentBinaryObject with base64-encoded PDF
+        pdf_filename = f"{invoice_number.replace('/', '-')}.pdf"
+        embedded_doc = self._add_element(attachment, f"{{{cbc}}}EmbeddedDocumentBinaryObject")
+        embedded_doc.set("mimeCode", "application/pdf")
+        embedded_doc.set("filename", pdf_filename)
+        embedded_doc.text = base64.b64encode(pdf_content).decode("ascii")
 
     def _add_supplier_party(self, root: ET.Element, ns: dict) -> None:
         """Add AccountingSupplierParty element."""
@@ -508,4 +548,3 @@ class UBLGenerator:
             f"{line.get('price_unit', 0):.4f}"
         )
         price_amt.set("currencyID", currency)
-

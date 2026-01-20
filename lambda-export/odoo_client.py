@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 """Odoo XML-RPC client for connecting to Odoo Online."""
 
+import base64
+import logging
 import xmlrpc.client
 from datetime import date, timedelta
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class OdooClient:
@@ -399,6 +403,34 @@ class OdooClient:
 
         return self.search_read("account.journal", domain, fields=fields)
 
+    def get_invoice_pdf(self, invoice_id: int) -> bytes | None:
+        """Fetch invoice PDF from Odoo.
+
+        Args:
+            invoice_id: Invoice record ID
+
+        Returns:
+            PDF content as bytes, or None if rendering failed
+        """
+        # Try multiple report names for compatibility
+        report_names = [
+            "account.report_invoice_with_payments",
+            "account.report_invoice",
+            "account.account_invoices",
+        ]
+
+        for report_name in report_names:
+            pdf_data = self.render_report_pdf(report_name, [invoice_id])
+            if pdf_data:
+                logger.info(
+                    "Generated invoice PDF using %s: %d bytes",
+                    report_name, len(pdf_data)
+                )
+                return pdf_data
+
+        logger.warning("Could not render invoice PDF for ID %d", invoice_id)
+        return None
+
     def render_report_pdf(
         self, report_name: str, record_ids: list[int]
     ) -> bytes | None:
@@ -427,12 +459,12 @@ class OdooClient:
                     return pdf_data
                 elif isinstance(pdf_data, str):
                     # Base64 encoded
-                    import base64
                     return base64.b64decode(pdf_data)
 
             return None
 
         except Exception as e:
+            logger.debug("Method 1 failed for %s: %s", report_name, e)
             # Method 2: Try alternative approach via report action
             try:
                 # Find the report action
@@ -456,11 +488,10 @@ class OdooClient:
                         if isinstance(pdf_data, bytes):
                             return pdf_data
                         elif isinstance(pdf_data, str):
-                            import base64
                             return base64.b64decode(pdf_data)
 
             except Exception as e2:
-                pass
+                logger.debug("Method 2 failed for %s: %s", report_name, e2)
 
             return None
 
@@ -492,4 +523,3 @@ def get_quarter_dates(quarter: str, year: int) -> tuple[date, date]:
         end_date = date(year, end_month + 1, 1) - timedelta(days=1)
 
     return start_date, end_date
-

@@ -125,6 +125,14 @@ variable "include_bank_statements" {
   default     = true
 }
 
+# === PDF Embedding ===
+
+variable "embed_pdf" {
+  description = "Embed invoice PDF in UBL XML (required by Belgian accounting software like BilltoBox)"
+  type        = bool
+  default     = true
+}
+
 # === Output Settings ===
 
 variable "ubl_file_extension" {
@@ -137,4 +145,3 @@ variable "ubl_file_extension" {
     error_message = "UBL file extension must be 'xml' or 'ubl'."
   }
 }
-
