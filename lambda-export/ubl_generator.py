@@ -85,21 +85,14 @@ class UBLGenerator:
             else:
                 ET.register_namespace("", uri)
 
-        # Create root element
+        # Create root element with all namespace declarations
         if is_credit_note:
-            root = ET.Element(
-                "CreditNote",
-                xmlns=ns[""],
-            )
+            root = ET.Element("CreditNote")
         else:
-            root = ET.Element(
-                "Invoice",
-                xmlns=ns[""],
-            )
+            root = ET.Element("Invoice")
 
-        # Add namespace declarations as attributes
-        root.set("xmlns:cac", ns["cac"])
-        root.set("xmlns:cbc", ns["cbc"])
+        # Set namespaces as attributes (ElementTree will handle via register_namespace)
+        root.set("xmlns", ns[""])
 
         # Customization and Profile ID (required for Peppol)
         self._add_element(
