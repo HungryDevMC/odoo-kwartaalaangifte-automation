@@ -70,6 +70,10 @@ class ExportConfig:
     # Embed invoice PDF in UBL XML (required by Belgian accounting software)
     embed_pdf: bool = True
 
+    # === UBL Validation ===
+    # Validate generated UBL files against Peppol BIS 3.0 rules
+    validate_ubl: bool = True
+
     # === Output Settings ===
     # S3 bucket for storing exports
     s3_bucket: Optional[str] = None
@@ -177,6 +181,7 @@ class ExportConfig:
             include_bank_statements=os.environ.get("INCLUDE_BANK_STATEMENTS", "true").lower() == "true",
             send_ubl_as_zip=os.environ.get("SEND_UBL_AS_ZIP", "true").lower() == "true",
             embed_pdf=os.environ.get("EMBED_PDF", "true").lower() == "true",
+            validate_ubl=os.environ.get("VALIDATE_UBL", "true").lower() == "true",
             s3_bucket=os.environ.get("S3_BUCKET"),
             ubl_file_extension=os.environ.get("UBL_FILE_EXTENSION", "xml"),
         )
@@ -214,6 +219,7 @@ class ExportConfig:
             include_bank_statements=event.get("include_bank_statements", base_config.include_bank_statements),
             send_ubl_as_zip=event.get("send_ubl_as_zip", base_config.send_ubl_as_zip),
             embed_pdf=event.get("embed_pdf", base_config.embed_pdf),
+            validate_ubl=event.get("validate_ubl", base_config.validate_ubl),
             s3_bucket=event.get("s3_bucket", base_config.s3_bucket),
             ubl_file_extension=event.get("ubl_file_extension", base_config.ubl_file_extension),
         )
