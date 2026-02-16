@@ -41,9 +41,15 @@ jobs:
         run: python -m pytest test_edge_cases.py test_version_compatibility.py -v --tb=short
 
   e2e-tests:
-    name: E2E Import Tests (Odoo 17)
+    name: E2E Import Tests (Odoo ${{ matrix.odoo-version }})
     runs-on: ubuntu-latest
     needs: unit-tests
+    strategy:
+      fail-fast: false
+      matrix:
+        # Note: Odoo 15 lacks public API for UBL import (create_document_from_attachment)
+        # UBL files are still valid and can be imported via Odoo 15 web UI
+        odoo-version: ['16', '17', '18']
     defaults:
       run:
         working-directory: lambda-export
@@ -63,6 +69,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run E2E tests
-        run: python test_e2e_import.py --ci
+      - name: Run E2E tests (Odoo ${{ matrix.odoo-version }})
+        run: python test_e2e_import.py --ci --odoo-version ${{ matrix.odoo-version }}
         timeout-minutes: 10

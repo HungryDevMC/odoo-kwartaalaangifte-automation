@@ -1,11 +1,13 @@
 # End-to-end UBL import testing with Odoo
 # Usage:
-#   python test_e2e_import.py --ci    # Full CI run (start, test, cleanup)
+#   python test_e2e_import.py --ci                    # Full CI run with Odoo 17
+#   ODOO_VERSION=18 python test_e2e_import.py --ci    # Test with Odoo 18
+#   python test_e2e_import.py --ci --odoo-version 16  # Test with Odoo 16
 
 services:
   odoo:
-    image: odoo:17
-    container_name: ubl-test-odoo
+    image: odoo:${ODOO_VERSION:-17}
+    container_name: ubl-test-odoo-${ODOO_VERSION:-17}
     depends_on:
       odoo-db:
         condition: service_healthy
@@ -26,7 +28,7 @@ services:
 
   odoo-db:
     image: postgres:15
-    container_name: ubl-test-odoo-db
+    container_name: ubl-test-odoo-db-${ODOO_VERSION:-17}
     environment:
       - POSTGRES_DB=postgres
       - POSTGRES_USER=odoo

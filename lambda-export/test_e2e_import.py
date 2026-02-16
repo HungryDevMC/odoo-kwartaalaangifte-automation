@@ -5,10 +5,16 @@ End-to-End UBL Import Testing
 Validates that generated UBL invoices can be imported into Odoo.
 Designed to run in CI/CD pipelines on each commit.
 
+Supported Odoo versions for E2E import testing:
+  - Odoo 16, 17, 18: Full support via create_document_from_attachment API
+  - Odoo 15: No public import API (use web UI manually)
+  - Odoo 12-14: No native UBL import module
+
 Usage:
-    python test_e2e_import.py --ci           # Full CI run (start, test, cleanup)
-    python test_e2e_import.py --ci --keep    # CI run, keep containers for debugging
-    python test_e2e_import.py --local-only   # Just validate locally, no Docker
+    python test_e2e_import.py --ci                       # Full CI run with Odoo 17
+    python test_e2e_import.py --ci --odoo-version 18     # Test with specific Odoo version
+    python test_e2e_import.py --ci --keep                # CI run, keep containers for debugging
+    python test_e2e_import.py --local-only               # Just validate locally, no Docker
 
 Exit codes:
     0 - All tests passed
@@ -229,9 +235,9 @@ class OdooE2ETest:
             return TestResult(filename, False, "Import returned no result")
 
         except xmlrpc.client.Fault as e:
-            return TestResult(filename, False, e.faultString[:200])
+            return TestResult(filename, False, e.faultString[:500])
         except Exception as e:
-            return TestResult(filename, False, str(e)[:200])
+            return TestResult(filename, False, str(e)[:500])
 
 
 def generate_test_invoices() -> list[tuple[str, bytes]]:
@@ -363,6 +369,32 @@ def generate_test_invoices() -> list[tuple[str, bytes]]:
     ]
     xml4 = generator.generate_invoice(invoice4, partner, lines4, taxes, {})
     invoices.append(("E2E-INV-003.xml", xml4))
+
+    # Test case 5: Invoice with discount
+    invoice5 = {
+        **invoice1,
+        "id": 5,
+        "name": "E2E-INV-004",
+        "_ubl_number": "E2E-INV-004",
+        "amount_untaxed": 900.00,  # 1000 - 10% discount
+        "amount_tax": 189.00,
+        "amount_total": 1089.00,
+    }
+    lines5 = [{
+        "id": 5,
+        "name": "Discounted Service",
+        "quantity": 10.0,
+        "price_unit": 100.00,
+        "price_subtotal": 900.00,  # After 10% discount
+        "price_total": 1089.00,
+        "discount": 10.0,
+        "product_id": False,
+        "product_uom_id": [1, "Units"],
+        "tax_ids": [1],
+        "move_id": [5, "E2E-INV-004"],
+    }]
+    xml5 = generator.generate_invoice(invoice5, partner, lines5, taxes, {})
+    invoices.append(("E2E-INV-004.xml", xml5))
 
     return invoices
 
@@ -526,8 +558,15 @@ def main():
         "--cleanup", action="store_true",
         help="Stop and remove containers"
     )
+    parser.add_argument(
+        "--odoo-version", type=str, default="17",
+        help="Odoo version to test (15, 16, 17, 18). Default: 17"
+    )
 
     args = parser.parse_args()
+
+    # Set ODOO_VERSION environment variable for docker-compose
+    os.environ["ODOO_VERSION"] = args.odoo_version
 
     # Cleanup only
     if args.cleanup:
@@ -556,7 +595,7 @@ def main():
     # Full CI run
     if args.ci:
         print("=" * 60)
-        print("E2E UBL IMPORT TEST")
+        print(f"E2E UBL IMPORT TEST (Odoo {args.odoo_version})")
         print("=" * 60)
 
         if not start_containers():
