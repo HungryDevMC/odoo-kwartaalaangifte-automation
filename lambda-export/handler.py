@@ -1,13 +1,25 @@
 # -*- coding: utf-8 -*-
 """AWS Lambda handler for Odoo UBL export.
 
-Supports all configuration options from the Odoo module:
+Supports Odoo versions 12.0 through 18.0+ with automatic version detection
+and compatibility handling for model/field differences.
+
+Features:
 - Direction filter (customer invoices / vendor bills / both)
 - Document type filter (invoices / credit notes / all)
 - State filter (posted / drafts / all combinations)
 - Custom domain filter
 - Email sending to BilltoBox and accountant
 - Quarterly auto-send scheduling
+- Peppol BIS 3.0 compliant UBL generation
+- PDF embedding in UBL (optional)
+- Bank statement export (adapts to version)
+
+Version Compatibility:
+- Odoo 12: Uses account.invoice model
+- Odoo 13+: Uses account.move model
+- Odoo 14+: Bank statement lines may exist without formal statements
+- Odoo 17+: Bank statements deprecated, uses transaction lines only
 """
 
 import base64
@@ -22,6 +34,7 @@ from config import ExportConfig
 from email_sender import OdooEmailSender
 from odoo_client import OdooClient, get_quarter_dates
 from ubl_generator import UBLGenerator
+from ubl_validator import UBLValidator, ValidationResult
 
 # Configure logging
 logger = logging.getLogger()
@@ -92,7 +105,7 @@ def lambda_handler(event: dict, context) -> dict:
             config.odoo_username, config.odoo_api_key
         )
         client.authenticate()
-        logger.info(f"Authenticated as user {client.uid}")
+        logger.info(f"Authenticated as user {client.uid} (Odoo {client.version})")
 
         # Run export
         result = _run_export(config, client, date_from, date_to, quarter, year)
@@ -151,7 +164,7 @@ def _handle_auto_quarterly_export(config: ExportConfig) -> dict:
         config.odoo_username, config.odoo_api_key
     )
     client.authenticate()
-    logger.info(f"Authenticated as user {client.uid}")
+    logger.info(f"Authenticated as user {client.uid} (Odoo {client.version})")
 
     # Run export
     result = _run_export(config, client, date_from, date_to, quarter, str(year))
@@ -221,9 +234,13 @@ def _run_export(
     # Generate UBL files
     generator = UBLGenerator(company)
     ubl_files = []  # List of (filename, xml_bytes)
+    validation_results = []  # Track validation per file
+    validator = UBLValidator() if config.validate_ubl else None
 
     if config.embed_pdf:
         logger.info("PDF embedding enabled - will fetch invoice PDFs from Odoo")
+    if config.validate_ubl:
+        logger.info("UBL validation enabled")
 
     for invoice in invoices:
         try:
@@ -280,6 +297,34 @@ def _run_export(
             ubl_files.append((filename, xml_content))
             logger.info(f"Generated UBL for {ubl_number} (type: {move_type}, pdf_embedded={pdf_content is not None})")
 
+            # Validate the generated UBL
+            if validator:
+                try:
+                    result = validator.validate(xml_content)
+                    validation_results.append({
+                        "filename": filename,
+                        "invoice": ubl_number,
+                        "valid": result.is_valid,
+                        "error_count": len(result.errors),
+                        "warning_count": len(result.warnings),
+                        "errors": [
+                            {"rule": e.rule_id, "message": e.message}
+                            for e in result.errors
+                        ],
+                        "warnings": [
+                            {"rule": w.rule_id, "message": w.message}
+                            for w in result.warnings
+                        ],
+                    })
+                    if result.is_valid:
+                        logger.info(f"Validation passed for {ubl_number} ({len(result.warnings)} warnings)")
+                    else:
+                        logger.warning(f"Validation FAILED for {ubl_number}: {len(result.errors)} errors")
+                        for err in result.errors[:3]:  # Log first 3 errors
+                            logger.warning(f"  [{err.rule_id}] {err.message}")
+                except Exception as e:
+                    logger.error(f"Validation error for {ubl_number}: {e}")
+
         except Exception as e:
             logger.error(f"Failed to generate UBL for invoice {invoice.get('id')}: {e}")
 
@@ -320,6 +365,7 @@ def _run_export(
         "total_invoices_found": len(invoices),
         "filename": zip_filename,
         "company": company.get("name"),
+        "odoo_version": str(client.version),
         "period": {
             "from": str(date_from),
             "to": str(date_to),
@@ -333,6 +379,27 @@ def _run_export(
             "include_bank_statements": config.include_bank_statements,
         },
     }
+
+    # Add validation summary if validation was performed
+    if validation_results:
+        valid_count = sum(1 for v in validation_results if v["valid"])
+        invalid_count = len(validation_results) - valid_count
+        total_errors = sum(v["error_count"] for v in validation_results)
+        total_warnings = sum(v["warning_count"] for v in validation_results)
+
+        result_data["validation"] = {
+            "enabled": True,
+            "valid_count": valid_count,
+            "invalid_count": invalid_count,
+            "total_errors": total_errors,
+            "total_warnings": total_warnings,
+            "all_valid": invalid_count == 0,
+            "details": validation_results,
+        }
+
+        if invalid_count > 0:
+            result_data["message"] += f" ({invalid_count} failed validation)"
+            logger.warning(f"Validation: {valid_count} valid, {invalid_count} invalid")
 
     # Upload to S3 if configured
     if config.s3_bucket:
@@ -666,6 +733,10 @@ def _export_bank_statements(
 ) -> list[tuple[str, bytes]]:
     """Export bank statements as PDFs.
 
+    Handles version differences:
+    - Odoo 12-16: Tries account.bank.statement model first
+    - Odoo 17+: Uses account.bank.statement.line directly (statements deprecated)
+
     Args:
         client: Odoo client
         config: Export configuration
@@ -681,11 +752,13 @@ def _export_bank_statements(
         # Get journal IDs to filter by (if specified)
         journal_ids = config.bank_journal_ids if config.bank_journal_ids else None
 
-        # Fetch bank statements (the document model)
+        # Fetch bank statements (the document model) - empty for Odoo 17+
         statements = client.get_bank_statements(date_from, date_to, journal_ids)
         logger.info(f"Found {len(statements)} bank statements (account.bank.statement)")
 
-        # Also check for statement lines (transactions) - in Odoo 14+ these may exist without statements
+        # Also check for statement lines (transactions)
+        # In Odoo 14+, these may exist without formal statements
+        # In Odoo 17+, this is the primary source
         statement_lines = []
         try:
             statement_lines = client.get_bank_statement_lines(date_from, date_to, journal_ids)
@@ -704,25 +777,37 @@ def _export_bank_statements(
             return statement_pdfs
 
         if not statements:
-            return statement_pdfs  # Return whatever we have (might be empty)
+            # No statements and no lines - return empty
+            if not statement_lines:
+                logger.info("No bank statements or transaction lines found")
+            return statement_pdfs
 
         # Try to render each statement as PDF
+        # Try multiple report names for version compatibility
+        report_names = [
+            "account.report_bank_statement",
+            "account.report_bankstatement",
+            "account.bank_statement_report",
+        ]
+
         for statement in statements:
             try:
                 statement_id = statement["id"]
                 statement_name = statement.get("name") or f"Statement_{statement_id}"
                 journal_name = "Bank"
-                
+
                 if statement.get("journal_id"):
                     journal_data = statement["journal_id"]
                     if isinstance(journal_data, (list, tuple)) and len(journal_data) > 1:
                         journal_name = journal_data[1]
 
-                # Try to render PDF via Odoo's report engine
-                pdf_data = client.render_report_pdf(
-                    "account.report_bank_statement",
-                    [statement_id]
-                )
+                # Try multiple report names for version compatibility
+                pdf_data = None
+                for report_name in report_names:
+                    pdf_data = client.render_report_pdf(report_name, [statement_id])
+                    if pdf_data:
+                        logger.debug(f"Rendered statement PDF using {report_name}")
+                        break
 
                 if pdf_data:
                     # Clean filename
