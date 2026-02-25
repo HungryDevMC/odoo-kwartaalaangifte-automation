@@ -6,13 +6,13 @@ Validates that generated UBL invoices can be imported into Odoo.
 Designed to run in CI/CD pipelines on each commit.
 
 Supported Odoo versions for E2E import testing:
-  - Odoo 16, 17, 18: Full support via create_document_from_attachment API
+  - Odoo 16, 17, 18, 19: Full support via create_document_from_attachment API
   - Odoo 15: No public import API (use web UI manually)
   - Odoo 12-14: No native UBL import module
 
 Usage:
     python test_e2e_import.py --ci                       # Full CI run with Odoo 17
-    python test_e2e_import.py --ci --odoo-version 18     # Test with specific Odoo version
+    python test_e2e_import.py --ci --odoo-version 19     # Test with specific Odoo version
     python test_e2e_import.py --ci --keep                # CI run, keep containers for debugging
     python test_e2e_import.py --local-only               # Just validate locally, no Docker
 
@@ -560,7 +560,7 @@ def main():
     )
     parser.add_argument(
         "--odoo-version", type=str, default="17",
-        help="Odoo version to test (15, 16, 17, 18). Default: 17"
+        help="Odoo version to test (15, 16, 17, 18, 19). Default: 17"
     )
 
     args = parser.parse_args()

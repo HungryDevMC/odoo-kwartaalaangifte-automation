@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Odoo XML-RPC client for connecting to Odoo Online.
 
-Supports Odoo versions 12.0 through 18.0 with automatic version detection
+Supports Odoo versions 12.0 through 19.0 with automatic version detection
 and compatibility handling for model/field differences.
 """
 
@@ -59,7 +59,7 @@ class OdooVersion:
 class OdooClient:
     """Client for connecting to Odoo via XML-RPC External API.
 
-    Supports Odoo versions 12.0 through 18.0+ with automatic compatibility
+    Supports Odoo versions 12.0 through 19.0 with automatic compatibility
     handling for model and field differences between versions.
     """
 
